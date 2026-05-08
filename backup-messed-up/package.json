@@ -1,0 +1,1 @@
+{ "name": "bron", "version": "2.0.0", "description": "Bron - Based on BrowserOS", "main": "dist/main.js", "scripts": { "build": "tsc", "start": "node dist/main.js", "dev": "npm run build ^&^& npm start" }, "license": "AGPL-3.0" } 

@@ -1,0 +1,15 @@
+node_modules
+dist
+release
+release_fixed
+extracted_app
+browseros-temp
+.tmp
+.env
+*.log
+graphify-out
+.DS_Store
+.codex
+.agents
+*.sqlite
+*.sqlite-journal

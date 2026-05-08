@@ -1,0 +1,310 @@
+{
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\postcss.config.js": {
+    "mtime": 1777795468000,
+    "hash": "8640f9b2e6475cc3f5b1ff4548925765"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\extra\\main\\main\\automationController.js": {
+    "mtime": 1777795468000,
+    "hash": "fc1a1c2a751ab93bbf22fe77fd2b164a"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\extra\\renderer\\assets\\index-LBkjVXVc.js": {
+    "mtime": 1777795468000,
+    "hash": "f835adda3540524a039767bb1d5b6e7c"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\agent.js": {
+    "mtime": 1777795468000,
+    "hash": "f88a9ee60261953a25e597033143aa71"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\attachments.js": {
+    "mtime": 1777795468000,
+    "hash": "209fc719edfff7ad0a98c999e3b4f044"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\browserController.js": {
+    "mtime": 1777795468000,
+    "hash": "053ec5b35ffa84750294d02577854e4d"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\ipc.js": {
+    "mtime": 1777795468000,
+    "hash": "d2ae4959ff6ccbee64601b8ccb4c42f3"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\main.js": {
+    "mtime": 1777795468000,
+    "hash": "70fbb8ed9f3e031c767817e226a7cc84"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\memory.js": {
+    "mtime": 1777795468000,
+    "hash": "2f10dfd42a7b133a2c1f133182bcd024"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\openrouter.js": {
+    "mtime": 1777795468000,
+    "hash": "6136251403fd71fcc4c3fd2f7d250ab9"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\preload.js": {
+    "mtime": 1777795468000,
+    "hash": "9bec7cb2a68d9bad74e75e96e4129a5f"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\main\\safety.js": {
+    "mtime": 1777795468000,
+    "hash": "1079b1f2f8f9bea60ff5bd7c8adc6376"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\main\\shared\\types.js": {
+    "mtime": 1777795468000,
+    "hash": "120d1789bf4c991b7b07408d34225feb"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-A2mWKg7L.js": {
+    "mtime": 1777795468000,
+    "hash": "92f2d270f7cb53a1201ce924680899c1"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-B8gv8x8m.js": {
+    "mtime": 1777795468000,
+    "hash": "99eb232c766bd1dae012d93f08cf9d57"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-Bb_mVxgD.js": {
+    "mtime": 1777795468000,
+    "hash": "a41892d13eb548d0fed4ea069266af5e"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-BLUKrn0Y.js": {
+    "mtime": 1777795468000,
+    "hash": "b94d9c3a16a1f67253df5dbbda5eed90"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-C-UXRXTK.js": {
+    "mtime": 1777795468000,
+    "hash": "cd653373414968dd9b3848cffa2e7dc0"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-CAjFR1d8.js": {
+    "mtime": 1777795468000,
+    "hash": "4459bcee3627f9cc90e4e5ed8fb5037e"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-CQ8gzrDc.js": {
+    "mtime": 1777795468000,
+    "hash": "21215eb6352e91ff028038c9e394c455"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-CqgOVbDN.js": {
+    "mtime": 1777795468000,
+    "hash": "4d41d42935429dbed9724b7a5ff230ec"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-DIFNAiwR.js": {
+    "mtime": 1777795468000,
+    "hash": "56d303064b6b01f72867beb4bdc6ae81"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-DKnIPugc.js": {
+    "mtime": 1777795468000,
+    "hash": "e421c157c9fc8a46dc777cea74e679aa"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-DnwEFcsH.js": {
+    "mtime": 1777795468000,
+    "hash": "ed08876b2f75f80dc8925a12d9189ca3"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-DxSwZOi5.js": {
+    "mtime": 1777795468000,
+    "hash": "07c1829f412fd9682f6936b2f0f502d4"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\assets\\index-Ku-ynKdD.js": {
+    "mtime": 1777795468000,
+    "hash": "be2c02d245853f50a64811788ef901de"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\main.js": {
+    "mtime": 1777795468000,
+    "hash": "99d338060142980d89105a3d4c9c6367"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\final_fix.js": {
+    "mtime": 1777795468000,
+    "hash": "65dc61dc63479e17e343e181d3df5644"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\fix_exports.js": {
+    "mtime": 1777795468000,
+    "hash": "ec003223eedb0214338954afdb5823e9"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\patch_agent.py": {
+    "mtime": 1777795468000,
+    "hash": "656aa61a30af1bfa343fc19ac834bf9d"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\patch_sidebar.js": {
+    "mtime": 1777795468000,
+    "hash": "8839713f609af60635037435fe3d5595"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\patch_sidebar.py": {
+    "mtime": 1777795468000,
+    "hash": "7c0a8a91cfce52152c9d0215377f9db9"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\repair_exports.js": {
+    "mtime": 1777795468000,
+    "hash": "639109d04a18ee5889c6bd319b0fd3f5"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\repair_exports_v2.js": {
+    "mtime": 1777795468000,
+    "hash": "8267bfa41de16bacfaef463e0ba4172e"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\restore_components.js": {
+    "mtime": 1777795468000,
+    "hash": "af4e933ec9bcf73c970fd56e9effbd63"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\restore_components.py": {
+    "mtime": 1777795468000,
+    "hash": "78c95ca66250b20434c2cbba07f2e546"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\test-sql.js": {
+    "mtime": 1777977086978.079,
+    "hash": "57e5321b498a6693c6ba2d791f690ab7"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scripts\\rebuild-portable.ps1": {
+    "mtime": 1777795468000,
+    "hash": "9d81d845af48045a920748dcee794770"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scripts\\repair-graphify-global.ps1": {
+    "mtime": 1777890050092.0608,
+    "hash": "6c667b090b57cfdf3c9b37144a851246"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scripts\\setup-graphify-global.ps1": {
+    "mtime": 1777889904804.9106,
+    "hash": "288c02036241e15a2236dec4ffe5c550"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\agent\\executor.ts": {
+    "mtime": 1778136085604.2185,
+    "hash": "ff4bbea2387c6835c1c234dc96ba38b7"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\browser\\browser-manager.ts": {
+    "mtime": 1778136085570.1765,
+    "hash": "c5be7ae5e4d505e189a551300263feb3"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\agent.ts": {
+    "mtime": 1778065408054.1753,
+    "hash": "3fdb69b7cc0d70b16142ca052c58893b"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\attachments.ts": {
+    "mtime": 1777795468000,
+    "hash": "df3de7a258060e10d1ba2b4d2ffc59c8"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\automationController.ts": {
+    "mtime": 1778065331268.4563,
+    "hash": "3d20160f8e6310ea05c16dbe6512c88b"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\browserController.ts": {
+    "mtime": 1778065370869.723,
+    "hash": "d34d97c04b2cab461d20178cc4462c40"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\ipc.ts": {
+    "mtime": 1777973350210.9045,
+    "hash": "65e56dc5fd96dce06365ed287c17b301"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\main.ts": {
+    "mtime": 1777973650732.9585,
+    "hash": "24b916ae625c5d5a0cb3facf1e19334b"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\memory.ts": {
+    "mtime": 1777977140011.006,
+    "hash": "8f28a4f04df2ac7c48b7481d1bded313"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\openrouter.ts": {
+    "mtime": 1778041209615.8296,
+    "hash": "ad148aa7014eaf5af65dc0ec4fda555d"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\preload.ts": {
+    "mtime": 1777795468000,
+    "hash": "4ed218e72b1002c326d45b15f9b48b1e"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\safety.ts": {
+    "mtime": 1777795468000,
+    "hash": "a2286521137dd4b6f7bf0605445575f5"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main\\webview-preload.ts": {
+    "mtime": 1777877515079.5718,
+    "hash": "8c199a89e3f81f054349fb6e326d1a1d"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\main.ts": {
+    "mtime": 1778136085085.7705,
+    "hash": "88d43ab8a6565c777b121526f31d7a75"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\memory\\core-memory.ts": {
+    "mtime": 1778136250831.8572,
+    "hash": "c4f4ff43e17b29518449cc1ad5ba1209"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\memory\\daily-memory.ts": {
+    "mtime": 1778136264103.4612,
+    "hash": "062ca349dc4329d9972f604c93a37e08"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\memory\\index.ts": {
+    "mtime": 1778136085384.4763,
+    "hash": "45f37c5a21e3bf64fed04003e0f669fa"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\memory\\soul.ts": {
+    "mtime": 1778136256577.547,
+    "hash": "d21482d1b464a982b0c1b985de383c90"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\App.tsx": {
+    "mtime": 1778136644890.2317,
+    "hash": "f6691482efa14e746b8ea4601926519f"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\AgentSidebar.tsx": {
+    "mtime": 1777974274609.0544,
+    "hash": "cfed432badb1ebe3b68bd556a97ec206"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\BrowserToolbar.tsx": {
+    "mtime": 1777795468000,
+    "hash": "9389e9b612e9a40b781553e6ac07f489"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\ChatHistory.tsx": {
+    "mtime": 1777795468000,
+    "hash": "9a285523b6986ae722dee67e63481b5d"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\HistoryPanel.tsx": {
+    "mtime": 1777795468000,
+    "hash": "5ff716eb6542f2092c0c1d70d5382e00"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\MemoryPanel.tsx": {
+    "mtime": 1777795468000,
+    "hash": "5c6b64deedcda38aeecce5276b82033b"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\MoreMenu.tsx": {
+    "mtime": 1777795468000,
+    "hash": "c57df4873c905c5abfbd476843491013"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\ProfileMenu.tsx": {
+    "mtime": 1777795468000,
+    "hash": "3b0048cb50da4dd28486da66443e6d2b"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\SettingsPanel.tsx": {
+    "mtime": 1777985894559.0876,
+    "hash": "22190cdef540ef6fd433c123e9e43fe1"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\components\\VerticalTabs.tsx": {
+    "mtime": 1777795468000,
+    "hash": "7e24f64834547caf645e18a2cffdda01"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\index.tsx": {
+    "mtime": 1777795468000,
+    "hash": "2d9e8cef72d8eb72d307b74fc7df2067"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\shared\\types.ts": {
+    "mtime": 1778065319048.9097,
+    "hash": "9e45064f4aa17b35150e801babee486c"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\tailwind.config.js": {
+    "mtime": 1777795468000,
+    "hash": "d4e5029f75c23fda8a0f1a1e0f88c40c"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\vite.config.ts": {
+    "mtime": 1777795468000,
+    "hash": "c88daa7c42d4c7cca1ab84c4689eb299"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\AGENTS.md": {
+    "mtime": 1777795468000,
+    "hash": "8ee39dcfe68a23b3797b02648930d699"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\GRAPHIFY_INTEGRATION.md": {
+    "mtime": 1777795468000,
+    "hash": "f2a52dd7b9b2c6d9656b5b5064643900"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\README.md": {
+    "mtime": 1777795468000,
+    "hash": "1eb4c7f01b6161e1c51373559c147afb"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\scratch\\chat_cleanup_quarantine_20260503_020205\\revert_backups\\dist_1777753775907\\renderer\\index.html": {
+    "mtime": 1777795468000,
+    "hash": "1e73cd512b8ed735d9aca5e5b4d8a07a"
+  },
+  "C:\\Users\\CoreX\\.gemini\\antigravity\\scratch\\bron-main\\src\\renderer\\index.html": {
+    "mtime": 1777795468000,
+    "hash": "a977caf137feb36037ec5ecc5c136a8e"
+  }
+}

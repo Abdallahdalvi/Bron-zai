@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.bron.agenticbrowser",
+  "productName": "Bron",
+  "directories": {
+    "output": "release",
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/**/*",
+    "node_modules/**/*",
+    "!node_modules/playwright/.local-browsers/**/*"
+  ],
+  "extraResources": [],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "Bron Setup.${ext}",
+    "icon": null,
+    "sign": null,
+    "forceCodeSigning": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false,
+    "installerIcon": null,
+    "uninstallerIcon": null,
+    "shortcutName": "Bron"
+  },
+  "portable": {
+    "artifactName": "Bron.${ext}"
+  }
+}

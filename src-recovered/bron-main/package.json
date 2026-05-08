@@ -1,0 +1,48 @@
+{
+  "name": "bron",
+  "version": "1.0.0",
+  "description": "Bron - Local Agentic Browser",
+  "author": "Bron",
+  "license": "MIT",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "dev:renderer": "vite",
+    "dev:main": "tsc -p tsconfig.main.json",
+    "dev:main:watch": "tsc -p tsconfig.main.json --watch",
+    "dev": "npm run dev:main && concurrently -k \"npm run dev:main:watch\" \"npm run dev:renderer\" \"wait-on http://localhost:5173 && electron .\"",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "npm run build:main && npm run build:renderer",
+    "dist:refresh-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/rebuild-portable.ps1",
+    "dist": "npm run build && npx electron-packager . Bron --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=\"^/src\" --ignore=\"^/\\.env\" --ignore=\"^/tsconfig\" --ignore=\"^/vite\\.config\" --ignore=\"^/tailwind\" --ignore=\"^/postcss\" --ignore=\"^/\\.gitignore\" --ignore=\"^/README\" --ignore=\"^/electron-builder\" --ignore=\"^/release\"",
+    "dist:installer": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "chrome-launcher": "^1.2.1",
+    "chrome-remote-interface": "^0.34.0",
+    "playwright": "^1.52.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sql.js": "^1.11.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "electron": "^35.1.2",
+    "electron-builder": "^25.1.8",
+    "framer-motion": "^12.6.3",
+    "lucide-react": "^0.474.0",
+    "postcss": "^8.5.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "wait-on": "^8.0.3"
+  }
+}
+
