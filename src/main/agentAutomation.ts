@@ -1,0 +1,47 @@
+import type { BrowserState, TabGroupInfo, TabInfo } from '../shared/types';
+
+export interface AgentAutomationController {
+  getActiveTabId(): string | null;
+  getAgentTabId(): string | null;
+  setAgentTabId(id: string | null): void;
+  getBrowserState(): Promise<BrowserState>;
+  getScreenshot(): Promise<string>;
+  getPdfData(): Promise<string>;
+  getDom(selector?: string): Promise<string>;
+  searchDom(query: string, limit?: number): Promise<string>;
+  evaluateScript(script: string): Promise<string>;
+  getConsoleLogs(options?: { clear?: boolean; level?: string; limit?: number; search?: string }): Promise<string>;
+  getTabs(): Promise<TabInfo[]>;
+  navigate(url: string): Promise<void>;
+  goBack(): Promise<void>;
+  goForward(): Promise<void>;
+  refresh(): Promise<void>;
+  search(query: string): Promise<string>;
+  highlightElement(selector: string): Promise<void>;
+  click(selector: string): Promise<string>;
+  clickAt(x: number, y: number): Promise<string>;
+  rightClick(selector: string): Promise<string>;
+  rightClickAt(x: number, y: number): Promise<string>;
+  selectOption(selector: string, value: string): Promise<string>;
+  check(selector: string): Promise<string>;
+  uncheck(selector: string): Promise<string>;
+  typeText(selector: string, text: string): Promise<string>;
+  uploadFiles(selector: string, files: Array<{ path: string; name: string; mimeType: string; data: string }>): Promise<string>;
+  pressEnter(): Promise<string>;
+  pressKey(key: string): Promise<string>;
+  focus(selector: string): Promise<string>;
+  hover(selector: string): Promise<string>;
+  hoverAt(x: number, y: number): Promise<string>;
+  adjustZoom(delta: number): Promise<number>;
+  scroll(direction: string): Promise<string>;
+  drag(sourceSelector: string, targetSelector: string): Promise<string>;
+  dragAt(sourceSelector: string, x: number, y: number): Promise<string>;
+  newTab(url?: string): Promise<string>;
+  switchTab(tabId: string): Promise<void>;
+  closeTab(tabId: string): Promise<void>;
+  listTabGroups(): Promise<TabGroupInfo[]>;
+  groupTabs(tabIds: string[], options?: { id?: string; title?: string; color?: string }): Promise<TabGroupInfo>;
+  updateTabGroup(groupId: string, updates: { title?: string; color?: string }): Promise<TabGroupInfo | null>;
+  ungroupTabs(tabIds?: string[], groupId?: string): Promise<number>;
+  closeTabGroup(groupId: string): Promise<number>;
+}

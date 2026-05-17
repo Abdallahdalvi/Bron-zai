@@ -6,6 +6,15 @@ export interface TabInfo {
   url: string;
   active: boolean;
   initialUrl?: string;
+  groupId?: string;
+  pinned?: boolean;
+}
+
+export interface TabGroupInfo {
+  id: string;
+  title: string;
+  color?: string;
+  tabIds: string[];
 }
 
 export interface ClickableElement {
@@ -29,7 +38,40 @@ export interface BrowserState {
   clickableElements: ClickableElement[];
   inputFields: InputField[];
   tabs: TabInfo[];
+  tabGroups?: TabGroupInfo[];
   screenshot?: string; // base64 jpeg
+}
+
+export interface RuntimeContext {
+  windowPartition: string;
+  incognito: boolean;
+  browserBackend?: 'webcontentsview';
+}
+
+export interface BrowserViewportRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  activeTabId?: string | null;
+  sidebarOpen?: boolean;
+}
+
+export interface BookmarkEntry {
+  id: number;
+  title: string;
+  url: string;
+  folder: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HistoryEntry {
+  id: number;
+  url: string;
+  title: string;
+  visited_at: string;
 }
 
 // ── Agent ────────────────────────────────────────────────────────────
@@ -54,13 +96,24 @@ export interface AgentAction {
     | 'open_url'
     | 'search'
     | 'click'
+    | 'click_at'
+    | 'right_click'
+    | 'right_click_at'
     | 'fill'
     | 'clear'
+    | 'check'
+    | 'uncheck'
     | 'select_option'
+    | 'upload_file'
     | 'type'
     | 'press_key'
     | 'press_enter'
+    | 'focus'
+    | 'hover'
+    | 'hover_at'
     | 'scroll'
+    | 'drag'
+    | 'drag_at'
     | 'extract'
     | 'summarize'
     | 'new_tab'
@@ -69,9 +122,41 @@ export interface AgentAction {
     | 'filesystem_read'
     | 'filesystem_write'
     | 'filesystem_edit'
+    | 'filesystem_bash'
     | 'filesystem_grep'
     | 'filesystem_find'
     | 'filesystem_ls'
+    | 'get_bookmarks'
+    | 'create_bookmark'
+    | 'remove_bookmark'
+    | 'update_bookmark'
+    | 'move_bookmark'
+    | 'search_bookmarks'
+    | 'search_history'
+    | 'get_recent_history'
+    | 'delete_history_url'
+    | 'delete_history_range'
+    | 'list_tab_groups'
+    | 'group_tabs'
+    | 'update_tab_group'
+    | 'ungroup_tabs'
+    | 'close_tab_group'
+    | 'save_pdf'
+    | 'save_screenshot'
+    | 'download_file'
+    | 'list_workflows'
+    | 'save_workflow'
+    | 'delete_workflow'
+    | 'list_saved_credentials'
+    | 'save_saved_credential'
+    | 'delete_saved_credential'
+    | 'list_autofill_profiles'
+    | 'save_autofill_profile'
+    | 'delete_autofill_profile'
+    | 'discover_server_categories_or_actions'
+    | 'execute_action'
+    | 'search_documentation'
+    | 'suggest_schedule'
     | 'memory_search'
     | 'memory_write'
     | 'memory_read_core'
@@ -103,13 +188,24 @@ export const VALID_ACTIONS = [
   'open_url',
   'search',
   'click',
+  'click_at',
+  'right_click',
+  'right_click_at',
   'fill',
   'clear',
+  'check',
+  'uncheck',
   'select_option',
+  'upload_file',
   'type',
   'press_key',
   'press_enter',
+  'focus',
+  'hover',
+  'hover_at',
   'scroll',
+  'drag',
+  'drag_at',
   'extract',
   'summarize',
   'new_tab',
@@ -118,9 +214,41 @@ export const VALID_ACTIONS = [
   'filesystem_read',
   'filesystem_write',
   'filesystem_edit',
+  'filesystem_bash',
   'filesystem_grep',
   'filesystem_find',
   'filesystem_ls',
+  'get_bookmarks',
+  'create_bookmark',
+  'remove_bookmark',
+  'update_bookmark',
+  'move_bookmark',
+  'search_bookmarks',
+  'search_history',
+  'get_recent_history',
+  'delete_history_url',
+  'delete_history_range',
+  'list_tab_groups',
+  'group_tabs',
+  'update_tab_group',
+  'ungroup_tabs',
+  'close_tab_group',
+  'save_pdf',
+  'save_screenshot',
+  'download_file',
+  'list_workflows',
+  'save_workflow',
+  'delete_workflow',
+  'list_saved_credentials',
+  'save_saved_credential',
+  'delete_saved_credential',
+  'list_autofill_profiles',
+  'save_autofill_profile',
+  'delete_autofill_profile',
+  'discover_server_categories_or_actions',
+  'execute_action',
+  'search_documentation',
+  'suggest_schedule',
   'memory_search',
   'memory_write',
   'memory_read_core',
@@ -178,6 +306,89 @@ export interface ChatSession {
   updated_at: string;
 }
 
+export interface WorkflowRecord {
+  id: number;
+  title: string;
+  task_prompt: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  last_run_at?: string;
+}
+
+export interface WorkflowScheduleRecord {
+  id: number;
+  workflow_id: number;
+  rrule: string;
+  enabled: boolean;
+  next_run_at?: string;
+  last_run_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowRunRecord {
+  id: number;
+  workflow_id: number;
+  origin: 'manual' | 'scheduled' | 'retry';
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  task_snapshot: string;
+  result_summary: string;
+  step_count: number;
+  error_message?: string;
+  started_at: string;
+  ended_at?: string;
+}
+
+export interface BrowserExtensionRecord {
+  id: number;
+  name: string;
+  source_path: string;
+  extension_id: string;
+  version: string;
+  enabled: boolean;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedCredentialRecord {
+  id: number;
+  domain: string;
+  username: string;
+  notes: string;
+  has_password: boolean;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string;
+}
+
+export interface AutofillProfileRecord {
+  id: number;
+  label: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  company: string;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrowserAutofillContext {
+  credential?: {
+    domain: string;
+    username: string;
+    password: string;
+  };
+  profile?: AutofillProfileRecord;
+}
+
 export interface AgentAttachment {
   id: string;
   name: string;
@@ -196,6 +407,9 @@ export interface AgentRunRequest {
   contextMessages?: string[];
   sessionId?: number;
   isChatMode?: boolean;
+  workflowId?: number;
+  workflowRunId?: number;
+  workflowOrigin?: 'manual' | 'scheduled' | 'retry';
 }
 
 export interface TaskRecord {
@@ -236,11 +450,31 @@ export interface Settings {
   model: string;
   headless: boolean;
   saveMemory: boolean;
+  agentFullAccess: boolean;
+  agentToolHints: boolean;
+  agentPromptEnhancement: boolean;
+  autoSaveSignIns: boolean;
+  workflowSchedulerEnabled: boolean;
+  syncAccountName: string;
+  syncPassphrase: string;
+  syncBundlePath: string;
   maxSteps: number;
   maxRuntimeMinutes: number;
   browserProfile: string;
   domainProfiles: string;
   theme: 'light' | 'dark';
+  
+  // Cost Guard settings
+  costGuardMaxCostPerTask: number;
+  costGuardMaxCostPerDay: number;
+  costGuardMaxRequestsPerMinute: number;
+  costGuardMaxConsecutiveErrors: number;
+  costGuardCooldownMs: number;
+  
+  // Semantic memory settings
+  embeddingProvider: 'local' | 'openai' | 'openrouter';
+  openaiApiKey: string;
+  strataConnections: string;
 }
 
 export interface ModelInfo {
@@ -255,14 +489,34 @@ export interface ModelInfo {
 
 export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
-  model: 'deepseek/deepseek-chat',
+  model: 'google/gemini-2.5-pro-exp-03-25:free',  // Free tier default
   headless: true,
   saveMemory: true,
-  maxSteps: 0,
-  maxRuntimeMinutes: 0,
+  agentFullAccess: true,
+  agentToolHints: true,
+  agentPromptEnhancement: true,
+  autoSaveSignIns: true,
+  workflowSchedulerEnabled: true,
+  syncAccountName: 'Local Browser',
+  syncPassphrase: '',
+  syncBundlePath: '',
+  maxSteps: 30,           // Sensible default (was 0 = unlimited)
+  maxRuntimeMinutes: 10,  // Sensible default (was 0 = unlimited)
   browserProfile: 'default',
   domainProfiles: '{}',
   theme: 'dark',
+  
+  // Cost Guard defaults
+  costGuardMaxCostPerTask: 1.0,        // $1.00 USD per task
+  costGuardMaxCostPerDay: 10.0,        // $10.00 USD per day
+  costGuardMaxRequestsPerMinute: 30,   // 30 req/min rate limit
+  costGuardMaxConsecutiveErrors: 5,    // Circuit breaker threshold
+  costGuardCooldownMs: 60000,          // 1 minute cooldown
+  
+  // Semantic memory defaults
+  embeddingProvider: 'local',          // Use local embeddings (privacy-first)
+  openaiApiKey: '',                    // Optional OpenAI key for better embeddings
+  strataConnections: '{}',             // JSON object of MCP connections
 };
 
 // ── IPC Channel Names ────────────────────────────────────────────────
@@ -303,6 +557,15 @@ export const IPC = {
   GET_CREDIT_USAGE_HISTORY: 'memory:getCreditUsageHistory',
   GET_HISTORY: 'memory:getHistory',
   ADD_HISTORY_ENTRY: 'memory:addHistory',
+  DELETE_HISTORY_ENTRY: 'memory:deleteHistoryEntry',
+  DELETE_HISTORY_URL: 'memory:deleteHistoryUrl',
+  DELETE_HISTORY_RANGE: 'memory:deleteHistoryRange',
+  CLEAR_HISTORY: 'memory:clearHistory',
+  GET_BOOKMARKS: 'memory:getBookmarks',
+  CREATE_BOOKMARK: 'memory:createBookmark',
+  UPDATE_BOOKMARK: 'memory:updateBookmark',
+  REMOVE_BOOKMARK: 'memory:removeBookmark',
+  SEARCH_BOOKMARKS: 'memory:searchBookmarks',
 
   // Skills
   GET_SKILLS: 'skills:getAll',
@@ -313,6 +576,27 @@ export const IPC = {
   GET_CHAT_SESSION: 'chat:getSession',
   SAVE_CHAT_SESSION: 'chat:saveSession',
   DELETE_CHAT_SESSION: 'chat:deleteSession',
+  GET_WORKFLOWS: 'workflow:getAll',
+  SAVE_WORKFLOW: 'workflow:save',
+  DELETE_WORKFLOW: 'workflow:delete',
+  RUN_WORKFLOW_NOW: 'workflow:runNow',
+  GET_WORKFLOW_RUNS: 'workflow:getRuns',
+  GET_WORKFLOW_SCHEDULES: 'workflow:getSchedules',
+  SAVE_WORKFLOW_SCHEDULE: 'workflow:saveSchedule',
+  DELETE_WORKFLOW_SCHEDULE: 'workflow:deleteSchedule',
+  PICK_EXTENSION_DIRECTORY: 'browser:pickExtensionDirectory',
+  GET_BROWSER_EXTENSIONS: 'browser:getExtensions',
+  SAVE_BROWSER_EXTENSION: 'browser:saveExtension',
+  DELETE_BROWSER_EXTENSION: 'browser:deleteExtension',
+  GET_SAVED_CREDENTIALS: 'browser:getSavedCredentials',
+  SAVE_SAVED_CREDENTIAL: 'browser:saveSavedCredential',
+  DELETE_SAVED_CREDENTIAL: 'browser:deleteSavedCredential',
+  GET_AUTOFILL_PROFILES: 'browser:getAutofillProfiles',
+  SAVE_AUTOFILL_PROFILE: 'browser:saveAutofillProfile',
+  DELETE_AUTOFILL_PROFILE: 'browser:deleteAutofillProfile',
+  GET_AUTOFILL_CONTEXT: 'browser:getAutofillContext',
+  EXPORT_SYNC_BUNDLE: 'sync:exportBundle',
+  IMPORT_SYNC_BUNDLE: 'sync:importBundle',
 
   // Settings
   GET_SETTINGS: 'settings:get',
@@ -334,6 +618,11 @@ export const IPC = {
   OPEN_HISTORY: 'browser:openHistory',
   NEW_WINDOW: 'browser:newWindow',
   NEW_INCOGNITO_WINDOW: 'browser:newIncognitoWindow',
+  SWITCH_BROWSER_PROFILE: 'browser:switchProfile',
+  SHOW_HISTORY_PANEL: 'browser:showHistoryPanel',
+  GET_RUNTIME_CONTEXT: 'app:getRuntimeContext',
+  SET_BROWSER_VIEWPORT: 'browser:setViewport',
+  ADJUST_BROWSER_ZOOM: 'browser:adjustZoom',
 } as const;
 
 // ── Global API Declaration ──────────────────────────────────────────
@@ -368,8 +657,17 @@ export interface BronAPI {
   readSoul: () => Promise<string>;
   updateSoul: (content: string) => Promise<{ updated: boolean }>;
   getCreditUsageHistory: (limit?: number) => Promise<CreditUsageRecord[]>;
-  getHistory: () => Promise<any[]>;
+  getHistory: (limit?: number) => Promise<HistoryEntry[]>;
   addHistoryEntry: (url: string, title: string) => Promise<void>;
+  deleteHistoryEntry: (id: number) => Promise<{ deleted: boolean }>;
+  deleteHistoryUrl: (url: string) => Promise<{ deleted: boolean }>;
+  deleteHistoryRange: (start?: string, end?: string) => Promise<{ deleted: boolean }>;
+  clearHistory: () => Promise<{ cleared: boolean }>;
+  getBookmarks: () => Promise<BookmarkEntry[]>;
+  createBookmark: (bookmark: Partial<BookmarkEntry> & { url: string }) => Promise<BookmarkEntry>;
+  updateBookmark: (id: number, updates: Partial<BookmarkEntry>) => Promise<BookmarkEntry | null>;
+  removeBookmark: (id: number) => Promise<{ deleted: boolean }>;
+  searchBookmarks: (query: string) => Promise<BookmarkEntry[]>;
   getSkills: () => Promise<SkillDefinition[]>;
   findSkill: (query: string) => Promise<SkillDefinition | null>;
 
@@ -384,6 +682,27 @@ export interface BronAPI {
   getChatSession: (id: number) => Promise<ChatSession | null>;
   saveChatSession: (title: string, messages: any[], id?: number) => Promise<number>;
   deleteChatSession: (id: number) => Promise<{ deleted: boolean }>;
+  getWorkflows: () => Promise<WorkflowRecord[]>;
+  saveWorkflow: (workflow: Partial<WorkflowRecord>) => Promise<number>;
+  deleteWorkflow: (id: number) => Promise<{ deleted: boolean }>;
+  runWorkflowNow: (id: number) => Promise<{ started: boolean; reason?: string }>;
+  getWorkflowRuns: (workflowId?: number) => Promise<WorkflowRunRecord[]>;
+  getWorkflowSchedules: (workflowId?: number) => Promise<WorkflowScheduleRecord[]>;
+  saveWorkflowSchedule: (schedule: Partial<WorkflowScheduleRecord>) => Promise<number>;
+  deleteWorkflowSchedule: (id: number) => Promise<{ deleted: boolean }>;
+  pickExtensionDirectory: () => Promise<string | null>;
+  getBrowserExtensions: () => Promise<BrowserExtensionRecord[]>;
+  saveBrowserExtension: (extension: Partial<BrowserExtensionRecord> & { source_path: string }) => Promise<BrowserExtensionRecord>;
+  deleteBrowserExtension: (id: number) => Promise<{ deleted: boolean }>;
+  getSavedCredentials: () => Promise<SavedCredentialRecord[]>;
+  saveSavedCredential: (credential: Partial<SavedCredentialRecord> & { domain: string; username?: string; password?: string; notes?: string }) => Promise<SavedCredentialRecord>;
+  deleteSavedCredential: (id: number) => Promise<{ deleted: boolean }>;
+  getAutofillProfiles: () => Promise<AutofillProfileRecord[]>;
+  saveAutofillProfile: (profile: Partial<AutofillProfileRecord> & { label: string }) => Promise<AutofillProfileRecord>;
+  deleteAutofillProfile: (id: number) => Promise<{ deleted: boolean }>;
+  getAutofillContext: (url: string) => Promise<BrowserAutofillContext>;
+  exportSyncBundle: () => Promise<{ saved: boolean; path?: string; reason?: string }>;
+  importSyncBundle: () => Promise<{ imported: boolean; reason?: string }>;
   
   // Misc
   openReportWindow: (html: string) => Promise<void>;
@@ -393,6 +712,10 @@ export interface BronAPI {
   openHistory: () => Promise<void>;
   newWindow: () => Promise<void>;
   newIncognitoWindow: () => Promise<void>;
+  switchBrowserProfile: (profileName: string) => Promise<{ switched: boolean }>;
+  getRuntimeContext: () => Promise<RuntimeContext>;
+  setBrowserViewport: (viewport: BrowserViewportRect) => Promise<{ applied: boolean }>;
+  adjustBrowserZoom: (delta: number) => Promise<number>;
 
   // Browser Highlight
   highlightElement: (selector: string) => Promise<{ highlighted: boolean }>;
@@ -406,6 +729,7 @@ export interface BronAPI {
   onBrowserError: (cb: (_e: any, data: any) => void) => () => void;
   onTabUpdated: (cb: (_e: any, data: any) => void) => () => void;
   onNewTabRequest: (cb: (_e: any, url: string) => void) => () => void;
+  onShowHistoryPanel: (cb: (_e: any) => void) => () => void;
 
   // Generic invoke
   invoke: (channel: string, ...args: any[]) => Promise<any>;
@@ -413,28 +737,6 @@ export interface BronAPI {
 
 
 // ── Webview Type Extension ──────────────────────────────────────────
-
-export interface ElectronWebview extends HTMLElement {
-  getURL(): string;
-  loadURL(url: string, options?: any): Promise<void>;
-  getTitle(): string;
-  isLoading(): boolean;
-  canGoBack(): boolean;
-  canGoForward(): boolean;
-  goBack(): void;
-  goForward(): void;
-  reload(): void;
-  stop(): void;
-  executeJavaScript(code: string, userGesture?: boolean): Promise<any>;
-  openDevTools(): void;
-  closeDevTools(): void;
-  isDevToolsOpened(): boolean;
-  getZoomFactor(): number;
-  setZoomFactor(factor: number): void;
-  send(channel: string, ...args: any[]): void;
-  addEventListener(type: string, listener: (e: any) => void, options?: boolean | AddEventListenerOptions): void;
-  removeEventListener(type: string, listener: (e: any) => void, options?: boolean | EventListenerOptions): void;
-}
 
 declare global {
   interface Window {

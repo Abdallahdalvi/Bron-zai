@@ -8,10 +8,27 @@ export interface MemorySearchHit {
   snippet: string;
 }
 
-const BRON_HOME = path.join(app.getPath('home'), '.bron');
-const MEMORY_DIR = path.join(BRON_HOME, 'memories');
-const CORE_PATH = path.join(BRON_HOME, 'CORE.md');
-const SOUL_PATH = path.join(BRON_HOME, 'SOUL.md');
+// Lazy initialization - paths are computed on first access, not module load
+// This prevents crashes when app is not yet ready
+let _paths: {
+  bronHome: string;
+  memoryDir: string;
+  corePath: string;
+  soulPath: string;
+} | null = null;
+
+function getPaths() {
+  if (!_paths) {
+    const bronHome = path.join(app.getPath('home'), '.bron');
+    _paths = {
+      bronHome,
+      memoryDir: path.join(bronHome, 'memories'),
+      corePath: path.join(bronHome, 'CORE.md'),
+      soulPath: path.join(bronHome, 'SOUL.md'),
+    };
+  }
+  return _paths;
+}
 
 const CORE_TEMPLATE = `# Core Memory
 Permanent facts about the user that persist forever.
@@ -123,7 +140,8 @@ function nowTimeStamp(): string {
 }
 
 async function pruneDailyMemories(maxFiles = 30): Promise<void> {
-  const files = await fs.readdir(MEMORY_DIR).catch(() => []);
+  const { memoryDir } = getPaths();
+  const files = await fs.readdir(memoryDir).catch(() => []);
   const dailyFiles = files
     .filter((file) => /^\d{4}-\d{2}-\d{2}\.md$/.test(file))
     .sort((a, b) => b.localeCompare(a));
@@ -131,7 +149,7 @@ async function pruneDailyMemories(maxFiles = 30): Promise<void> {
   if (dailyFiles.length <= maxFiles) return;
   const toDelete = dailyFiles.slice(maxFiles);
   await Promise.all(
-    toDelete.map((file) => fs.unlink(path.join(MEMORY_DIR, file)).catch(() => undefined)),
+    toDelete.map((file) => fs.unlink(path.join(memoryDir, file)).catch(() => undefined)),
   );
 }
 
@@ -176,35 +194,32 @@ export function getMemoryPaths(): {
   corePath: string;
   soulPath: string;
 } {
-  return {
-    bronHome: BRON_HOME,
-    memoryDir: MEMORY_DIR,
-    corePath: CORE_PATH,
-    soulPath: SOUL_PATH,
-  };
+  return getPaths();
 }
 
 export async function initMemorySystem(): Promise<void> {
-  await fs.mkdir(MEMORY_DIR, { recursive: true });
+  const { memoryDir, corePath, soulPath } = getPaths();
+  await fs.mkdir(memoryDir, { recursive: true });
 
-  if (!(await fileExists(CORE_PATH))) {
-    await fs.writeFile(CORE_PATH, CORE_TEMPLATE, 'utf-8');
+  if (!(await fileExists(corePath))) {
+    await fs.writeFile(corePath, CORE_TEMPLATE, 'utf-8');
   }
 
-  if (!(await fileExists(SOUL_PATH))) {
-    await fs.writeFile(SOUL_PATH, SOUL_TEMPLATE, 'utf-8');
+  if (!(await fileExists(soulPath))) {
+    await fs.writeFile(soulPath, SOUL_TEMPLATE, 'utf-8');
   }
 
   await pruneDailyMemories(30);
 }
 
 export async function writeDailyMemory(content: string, title = 'Session Note'): Promise<string> {
+  const { memoryDir } = getPaths();
   const trimmed = String(content || '').trim();
-  if (!trimmed) return path.join(MEMORY_DIR, `${nowDateKey()}.md`);
+  if (!trimmed) return path.join(memoryDir, `${nowDateKey()}.md`);
 
   const date = nowDateKey();
   const entry = `\n## ${nowTimeStamp()} - ${String(title || 'Session Note').trim()}\n${trimmed}\n`;
-  const targetPath = path.join(MEMORY_DIR, `${date}.md`);
+  const targetPath = path.join(memoryDir, `${date}.md`);
 
   if (await fileExists(targetPath)) {
     await fs.appendFile(targetPath, entry, 'utf-8');
@@ -220,34 +235,35 @@ export async function searchMemory(rawKeywords: string | string[]): Promise<Memo
   const keywords = normalizeKeywords(rawKeywords);
   if (keywords.length === 0) return [];
 
+  const { memoryDir, corePath, soulPath } = getPaths();
   const hits: MemorySearchHit[] = [];
 
-  const core = await fs.readFile(CORE_PATH, 'utf-8').catch(() => '');
+  const core = await fs.readFile(corePath, 'utf-8').catch(() => '');
   if (core && keywords.some((k) => core.toLowerCase().includes(k.toLowerCase()))) {
     hits.push({
-      file: CORE_PATH,
+      file: corePath,
       kind: 'core',
       snippet: extractSnippet(core, keywords),
     });
   }
 
-  const soul = await fs.readFile(SOUL_PATH, 'utf-8').catch(() => '');
+  const soul = await fs.readFile(soulPath, 'utf-8').catch(() => '');
   if (soul && keywords.some((k) => soul.toLowerCase().includes(k.toLowerCase()))) {
     hits.push({
-      file: SOUL_PATH,
+      file: soulPath,
       kind: 'soul',
       snippet: extractSnippet(soul, keywords),
     });
   }
 
-  const files = await fs.readdir(MEMORY_DIR).catch(() => []);
+  const files = await fs.readdir(memoryDir).catch(() => []);
   const dailyFiles = files
     .filter((file) => /^\d{4}-\d{2}-\d{2}\.md$/.test(file))
     .sort((a, b) => b.localeCompare(a))
     .slice(0, 30);
 
   for (const file of dailyFiles) {
-    const fullPath = path.join(MEMORY_DIR, file);
+    const fullPath = path.join(memoryDir, file);
     const body = await fs.readFile(fullPath, 'utf-8').catch(() => '');
     if (!body) continue;
     if (!keywords.some((k) => body.toLowerCase().includes(k.toLowerCase()))) continue;
@@ -262,11 +278,13 @@ export async function searchMemory(rawKeywords: string | string[]): Promise<Memo
 }
 
 export async function readCore(): Promise<string> {
-  return await fs.readFile(CORE_PATH, 'utf-8');
+  const { corePath } = getPaths();
+  return await fs.readFile(corePath, 'utf-8');
 }
 
 export async function updateCore(additions: string[], removals: string[]): Promise<void> {
-  let content = await fs.readFile(CORE_PATH, 'utf-8').catch(() => CORE_TEMPLATE);
+  const { corePath } = getPaths();
+  let content = await fs.readFile(corePath, 'utf-8').catch(() => CORE_TEMPLATE);
 
   if (Array.isArray(removals) && removals.length > 0) {
     const removeTokens = removals.map((entry) => entry.toLowerCase().trim()).filter(Boolean);
@@ -290,15 +308,17 @@ export async function updateCore(additions: string[], removals: string[]): Promi
     content = `${content.trimEnd()}\n${block}\n`;
   }
 
-  await fs.writeFile(CORE_PATH, content, 'utf-8');
+  await fs.writeFile(corePath, content, 'utf-8');
 }
 
 export async function readSoul(): Promise<string> {
-  return await fs.readFile(SOUL_PATH, 'utf-8');
+  const { soulPath } = getPaths();
+  return await fs.readFile(soulPath, 'utf-8');
 }
 
 export async function updateSoul(nextContent: string): Promise<void> {
+  const { soulPath } = getPaths();
   const content = String(nextContent || '').trim();
   if (!content) return;
-  await fs.writeFile(SOUL_PATH, `${content}\n`, 'utf-8');
+  await fs.writeFile(soulPath, `${content}\n`, 'utf-8');
 }

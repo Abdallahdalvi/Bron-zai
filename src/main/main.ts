@@ -1,22 +1,26 @@
 import { app, BrowserWindow, Menu, session, shell, ipcMain, clipboard, nativeTheme, webContents } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { IPC } from '../shared/types';
-import { initDatabase, getSettings } from './memory';
-import { setupIPC, parseDomainProfileMap } from './ipc';
-import { BrowserController } from './browserController';
-import { RendererAutomationController } from './automationController';
+import { BrowserExtensionRecord, IPC } from '../shared/types';
+import { initDatabase, getSettings, saveSettings, getBrowserExtensions, saveBrowserExtension } from './memory';
+import { setupIPC } from './ipc';
+import { BrowserHostCoordinator } from './browserHost';
+import { WebContentsViewController } from './webContentsViewController';
 import { initMemorySystem } from '../memory';
+import { logger, logInfo, logWarn, logError } from './logger';
+import { applySecurityHardening } from './security';
+import { initSemanticMemory } from './semanticMemory';
+import { initializeStrataIntegration, strata } from '../integrations/strata';
+import { startWorkflowScheduler, stopWorkflowScheduler } from './workflowScheduler';
 
 let mainWindow: BrowserWindow | null = null;
-let browserController: BrowserController | null = null;
-let cookieSyncTimer: NodeJS.Timeout | null = null;
-let cookieSyncInFlight = false;
-let rendererAutomationController: RendererAutomationController | null = null;
+let webContentsViewController: WebContentsViewController | null = null;
+const browserHost = new BrowserHostCoordinator();
+const windowPartitions = new Map<number, string>();
+const configuredSessionKeys = new Set<string>();
+const loadedExtensionKeys = new Set<string>();
 
 const isDev = !app.isPackaged;
-const UNIFIED_AGENT_MODE = true;
-
 app.commandLine.appendSwitch(
   'disable-features',
   'WebAuthentication,WebAuthenticationUI,FedCm,CredentialManagement',
@@ -28,8 +32,6 @@ const TRACKER_HOST_BLOCKLIST = new Set([
   'google-analytics.com',
   'googletagmanager.com',
   'googletagservices.com',
-  'facebook.net',
-  'connect.facebook.net',
   'ads.twitter.com',
   'static.ads-twitter.com',
   'amazon-adsystem.com',
@@ -63,7 +65,24 @@ const DENIED_PERMISSIONS = new Set([
   'openExternal',
 ]);
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+function normalizeProfileName(input: string): string {
+  const clean = String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return clean || 'default';
+}
+
+function partitionForProfile(profileName: string): string {
+  const normalized = normalizeProfileName(profileName);
+  return normalized !== 'default'
+    ? `persist:bron-profile-${normalized}`
+    : 'persist:bron-session';
+}
 
 function configureEmbeddedBrowserSecurity(): void {
   app.on('web-contents-created', (_event, contents) => {
@@ -71,14 +90,18 @@ function configureEmbeddedBrowserSecurity(): void {
     contents.on('did-finish-load', () => {
       const isDark = nativeTheme.themeSource === 'dark';
       const scheme = isDark ? 'dark' : 'light';
-      contents.insertCSS(`:root { color-scheme: ${scheme} !important; }`).catch(() => {});
+      contents.insertCSS(`:root { color-scheme: ${scheme} !important; }`).catch((err) => {
+        console.warn('[Theme] Failed to insert CSS:', err);
+      });
     });
 
     contents.on('will-attach-webview', (event, webPreferences, params) => {
       // Avoid deleting preload if possible, or set to undefined
+      /*
       if ((webPreferences as any).preload) {
         delete (webPreferences as any).preload;
       }
+      */
       
       (webPreferences as Record<string, unknown>).nodeIntegration = false;
       (webPreferences as Record<string, unknown>).contextIsolation = true;
@@ -106,7 +129,9 @@ function configureEmbeddedBrowserSecurity(): void {
       
       // Fallback for non-webview windows
       if (/^https?:\/\//i.test(url)) {
-        shell.openExternal(url).catch(() => {});
+        shell.openExternal(url).catch((err) => {
+          console.warn('[Shell] Failed to open external URL:', err);
+        });
       }
       return { action: 'deny' };
     });
@@ -114,13 +139,12 @@ function configureEmbeddedBrowserSecurity(): void {
 
 }
 
-function configureSessionPolicies(): void {
-  const sessions = [
-    session.defaultSession,
-    session.fromPartition('persist:bron-session')
-  ];
+function configureSessionPolicyForKey(key: string, ses: Electron.Session): void {
+  if (configuredSessionKeys.has(key)) {
+    return;
+  }
+  configuredSessionKeys.add(key);
 
-  sessions.forEach(ses => {
     ses.setPermissionCheckHandler((_wc, permission) => {
       if (DENIED_PERMISSIONS.has(permission)) return false;
       return true;
@@ -171,83 +195,147 @@ function configureSessionPolicies(): void {
       } catch { }
       callback({ cancel: false });
     });
-  });
+
+    // Disable Trusted Types CSP to allow automation scripts on sites like Google Flights
+    ses.webRequest.onHeadersReceived((details, callback) => {
+      try {
+        const headers = details.responseHeaders || {};
+        
+        // Remove or modify CSP headers that block script injection
+        const cspHeaders = ['content-security-policy', 'content-security-policy-report-only', 'x-content-security-policy'];
+        for (const header of cspHeaders) {
+          if (headers[header]) {
+            // Remove trusted-types directives that block inline scripts
+            let csp = headers[header][0] || '';
+            // Remove require-trusted-types-for and trusted-types directives
+            csp = csp.replace(/require-trusted-types-for\s+[^;]*;?/gi, '');
+            csp = csp.replace(/trusted-types\s+[^;]*;?/gi, '');
+            // Allow unsafe-eval if script-src exists (for automation)
+            if (csp.includes('script-src')) {
+              csp = csp.replace(/script-src\s+([^;]+)/gi, "script-src $1 'unsafe-eval' 'unsafe-inline'");
+            }
+            headers[header][0] = csp;
+          }
+        }
+        
+        callback({ cancel: false, responseHeaders: headers });
+      } catch {
+        callback({ cancel: false });
+      }
+    });
 }
 
-
-function toPlaywrightSameSite(
-  sameSite: string | undefined,
-): 'Strict' | 'Lax' | 'None' | undefined {
-  if (!sameSite) return undefined;
-  const s = sameSite.toLowerCase();
-  if (s === 'strict') return 'Strict';
-  if (s === 'lax') return 'Lax';
-  if (s === 'no_restriction') return 'None';
-  return undefined;
+function configureSessionPolicies(): void {
+  configureSessionPolicyForKey('__default__', session.defaultSession);
+  configureSessionPolicyForKey('persist:bron-session', session.fromPartition('persist:bron-session'));
 }
 
-function toElectronSameSite(sameSite: string | undefined): 'strict' | 'lax' | 'no_restriction' | 'unspecified' {
-  if (!sameSite) return 'unspecified';
-  const s = sameSite.toLowerCase();
-  if (s === 'strict') return 'strict';
-  if (s === 'lax') return 'lax';
-  if (s === 'none') return 'no_restriction';
-  return 'unspecified';
+function configurePartitionSession(partition: string): Electron.Session {
+  const ses = session.fromPartition(partition);
+  configureSessionPolicyForKey(partition, ses);
+  return ses;
 }
 
-function buildCookieUrl(domain: string | undefined, secure: boolean, pathName: string | undefined): string | null {
-  const raw = String(domain || '').trim();
-  if (!raw) return null;
-  const host = raw.replace(/^\./, '');
-  if (!host) return null;
-  const scheme = secure ? 'https' : 'http';
-  const pathPart = pathName && pathName.startsWith('/') ? pathName : '/';
-  return `${scheme}://${host}${pathPart}`;
+function extensionLoadKey(partition: string, sourcePath: string): string {
+  return `${partition}::${path.resolve(sourcePath).toLowerCase()}`;
 }
 
-async function syncCookies(controller: BrowserController): Promise<void> {
-  if (cookieSyncInFlight) return;
-  cookieSyncInFlight = true;
+function getKnownPersistentPartitions(): string[] {
+  const partitions = new Set<string>(['persist:bron-session']);
+  for (const partition of windowPartitions.values()) {
+    if (partition.startsWith('persist:')) {
+      partitions.add(partition);
+    }
+  }
+  return Array.from(partitions);
+}
+
+async function loadExtensionRecordIntoPartition(
+  record: BrowserExtensionRecord,
+  partition: string,
+): Promise<BrowserExtensionRecord> {
+  if (!record.enabled || !partition.startsWith('persist:')) {
+    return record;
+  }
+
+  const manifestPath = path.join(record.source_path, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    return saveBrowserExtension({
+      ...record,
+      last_error: 'manifest.json not found in extension directory',
+    });
+  }
+
+  const key = extensionLoadKey(partition, record.source_path);
+  if (loadedExtensionKeys.has(key)) {
+    return record;
+  }
+
+  const ses = configurePartitionSession(partition);
   try {
-    const ses = session.defaultSession;
+    const existing = ses.getAllExtensions().find((ext: any) => {
+      const extPath = String((ext as any)?.path || '').trim();
+      return (
+        ext.id === record.extension_id ||
+        (extPath && path.resolve(extPath).toLowerCase() === path.resolve(record.source_path).toLowerCase())
+      );
+    }) as any;
 
-    // Electron -> Playwright (manual browsing state for the agent).
-    // Keep this one-way to avoid clobbering live auth cookies in the webview.
-    const electronCookies = await ses.cookies.get({});
-    const incoming = electronCookies
-      .map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path || '/',
-        secure: !!c.secure,
-        httpOnly: !!c.httpOnly,
-        expires: typeof c.expirationDate === 'number' ? c.expirationDate : undefined,
-        sameSite: toPlaywrightSameSite(c.sameSite) as 'Strict' | 'Lax' | 'None' | undefined,
-      }))
-      .filter((c) => c.name && c.domain);
-    await controller.importCookies(incoming);
-  } catch {
-    // Best-effort sync; ignore transient cookie failures.
-  } finally {
-    cookieSyncInFlight = false;
+    const loaded = existing || await ses.loadExtension(record.source_path, { allowFileAccess: true });
+    loadedExtensionKeys.add(key);
+    return saveBrowserExtension({
+      ...record,
+      name: String(loaded?.name || loaded?.manifest?.name || record.name || path.basename(record.source_path)),
+      extension_id: String(loaded?.id || record.extension_id || ''),
+      version: String(loaded?.version || loaded?.manifest?.version || record.version || ''),
+      last_error: '',
+      enabled: true,
+    });
+  } catch (err) {
+    return saveBrowserExtension({
+      ...record,
+      last_error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
-function startCookieSync(controller: BrowserController): void {
-  if (cookieSyncTimer) clearInterval(cookieSyncTimer);
-  cookieSyncTimer = setInterval(() => {
-    syncCookies(controller).catch(() => {});
-  }, 15000);
-  syncCookies(controller).catch(() => {});
-}
-
-function stopCookieSync(): void {
-  if (cookieSyncTimer) {
-    clearInterval(cookieSyncTimer);
-    cookieSyncTimer = null;
+async function loadConfiguredExtensionsIntoPartition(partition: string): Promise<void> {
+  if (!partition.startsWith('persist:')) return;
+  const extensions = getBrowserExtensions().filter((record) => record.enabled);
+  for (const record of extensions) {
+    await loadExtensionRecordIntoPartition(record, partition);
   }
 }
+
+async function installBrowserExtensionRecord(record: BrowserExtensionRecord): Promise<BrowserExtensionRecord> {
+  let latest = record;
+  for (const partition of getKnownPersistentPartitions()) {
+    latest = await loadExtensionRecordIntoPartition(latest, partition);
+  }
+  return latest;
+}
+
+async function removeBrowserExtensionRecord(record: BrowserExtensionRecord): Promise<void> {
+  for (const partition of getKnownPersistentPartitions()) {
+    const ses = configurePartitionSession(partition);
+    const ext = ses.getAllExtensions().find((entry: any) => {
+      const extPath = String((entry as any)?.path || '').trim();
+      return (
+        entry.id === record.extension_id ||
+        (extPath && path.resolve(extPath).toLowerCase() === path.resolve(record.source_path).toLowerCase())
+      );
+    }) as any;
+    if (ext?.id) {
+      try {
+        ses.removeExtension(ext.id);
+      } catch {
+        // Ignore extension unload failures.
+      }
+    }
+    loadedExtensionKeys.delete(extensionLoadKey(partition, record.source_path));
+  }
+}
+
 
 function resolveRendererHtmlPath(): string {
   const candidates = [
@@ -331,10 +419,13 @@ function setupContextMenu(): void {
   });
 }
 
-function createWindow(partition?: string): void {
-  // Set consistent User Agent for all webviews
+function createWindow(partition?: string): BrowserWindow {
+  // Set a consistent user agent for the hosted browser session.
   const basePartition = partition || 'persist:bron-session';
-  session.fromPartition(basePartition).setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+  configurePartitionSession(basePartition).setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36');
+  void loadConfiguredExtensionsIntoPartition(basePartition).catch((err) => {
+    console.warn('[Extensions] Failed to load configured extensions:', err);
+  });
 
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -356,42 +447,53 @@ function createWindow(partition?: string): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webviewTag: true,
       partition: basePartition,
+      additionalArguments: [
+        `--bron-window-partition=${basePartition}`,
+        `--bron-window-incognito=${String(!basePartition.startsWith('persist:'))}`,
+      ],
     },
   });
+  const win = mainWindow;
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    win.loadURL('http://localhost:5173');
   } else {
     const rendererHtmlPath = resolveRendererHtmlPath();
-    mainWindow.loadFile(rendererHtmlPath);
+    win.loadFile(rendererHtmlPath);
   }
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+  win.once('ready-to-show', () => {
+    win.show();
   });
+  windowPartitions.set(win.webContents.id, basePartition);
 
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.removeMenu();
+  win.setMenuBarVisibility(false);
+  win.removeMenu();
 
 
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('Renderer process gone:', details);
-    if (details.reason !== 'clean-exit') {
-      mainWindow?.reload();
+  win.on('closed', () => {
+    browserHost.clearWindow(win.webContents.id);
+    windowPartitions.delete(win.webContents.id);
+    if (mainWindow === win) {
+      mainWindow = null;
     }
   });
 
-  mainWindow.webContents.on('unresponsive', () => {
-    console.warn('Renderer unresponsive, reloading...');
-    mainWindow?.reload();
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Renderer process gone:', details);
+    if (details.reason !== 'clean-exit') {
+      win.reload();
+    }
   });
+
+  win.webContents.on('unresponsive', () => {
+    console.warn('Renderer unresponsive, reloading...');
+    win.reload();
+  });
+
+  return win;
 }
 
 app.whenReady().then(async () => {
@@ -428,27 +530,53 @@ app.whenReady().then(async () => {
   configureEmbeddedBrowserSecurity();
   configureSessionPolicies();
 
-  // 1. Initialise database
+  // 1. Initialise database and core subsystems
+  await logger.initialize();
+  logInfo('Bron starting up...', 'Main');
+  
   await initDatabase();
   await initMemorySystem();
+  
+  // Initialize new systems
+  try {
+    await initSemanticMemory();
+    logInfo('Semantic memory initialized', 'Main');
+  } catch (err) {
+    logWarn('Semantic memory initialization failed, falling back to keyword search', 'Main', {}, err as Error);
+  }
+  
+  await initializeStrataIntegration();
+  logInfo('Strata MCP integration initialized', 'Main');
+  
+  // Apply security hardening
+  applySecurityHardening();
+  
   const settings = getSettings();
+  browserHost.setBackend('webcontentsview');
 
   // 2. Create Electron window with profile partition
-  const profilePartition = settings.browserProfile && settings.browserProfile !== 'default' 
-    ? `persist:bron-profile-${settings.browserProfile}` 
-    : 'persist:bron-session';
+  const profilePartition = partitionForProfile(settings.browserProfile);
   createWindow(profilePartition);
 
-  // 4. Create & configure browser controller
-  browserController = new BrowserController();
-  browserController.setHeadless(settings.headless);
-  await browserController.setProfile(settings.browserProfile);
-  browserController.setDomainProfileMap(parseDomainProfileMap(settings.domainProfiles));
+  // 4. Create the single live-browser automation controller.
+  webContentsViewController = new WebContentsViewController(
+    () => mainWindow,
+    (windowWebContentsId) => windowPartitions.get(windowWebContentsId) || 'persist:bron-session',
+    browserHost,
+  );
 
-  // 5. Register IPC handlers
-  rendererAutomationController = new RendererAutomationController(() => mainWindow);
-  setupIPC(() => mainWindow, browserController, rendererAutomationController);
+  // 5. Register IPC handlers against the single live controller.
+  const agentController = webContentsViewController!;
+  setupIPC(() => mainWindow, agentController, {
+    installExtension: installBrowserExtensionRecord,
+    removeExtension: removeBrowserExtensionRecord,
+    browserHost,
+  });
   setupContextMenu();
+  startWorkflowScheduler({
+    browserController: agentController,
+    getWindow: () => mainWindow,
+  });
 
   ipcMain.handle(IPC.OPEN_REPORT_WINDOW, async (_e, html: string) => {
     const reportWin = new BrowserWindow({
@@ -462,14 +590,12 @@ app.whenReady().then(async () => {
       },
     });
     const base64Html = Buffer.from(html).toString('base64');
-    reportWin.loadURL(`data:text/html;base64,${base64Html}`);
+    reportWin.loadURL(`data:text/html;charset=utf-8;base64,${base64Html}`);
   });
 
   ipcMain.handle(IPC.NEW_WINDOW, async () => {
     const settings = getSettings();
-    const profilePartition = settings.browserProfile && settings.browserProfile !== 'default' 
-      ? `persist:bron-profile-${settings.browserProfile}` 
-      : 'persist:bron-session';
+    const profilePartition = partitionForProfile(settings.browserProfile);
     
     createWindow(profilePartition);
   });
@@ -477,6 +603,30 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.NEW_INCOGNITO_WINDOW, async () => {
     const partition = `incognito_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
     createWindow(partition);
+  });
+
+  ipcMain.handle(IPC.SWITCH_BROWSER_PROFILE, async (event, profileName: string) => {
+    const normalized = normalizeProfileName(profileName);
+    const currentWindow = BrowserWindow.fromWebContents(event.sender);
+    const nextPartition = partitionForProfile(normalized);
+
+    saveSettings({ browserProfile: normalized } as any);
+
+    const replacement = createWindow(nextPartition);
+    replacement.once('ready-to-show', () => {
+      currentWindow?.close();
+    });
+
+    return { switched: true };
+  });
+
+  ipcMain.handle(IPC.GET_RUNTIME_CONTEXT, async (event) => {
+    const senderId = event.sender.id;
+    const windowPartition = windowPartitions.get(senderId) || 'persist:bron-session';
+    return browserHost.buildRuntimeContext({
+      windowPartition,
+      incognito: !windowPartition.startsWith('persist:'),
+    });
   });
 
   ipcMain.handle('theme:update-overlay', (_e, { theme, color, symbolColor }: { theme: string, color: string, symbolColor: string }) => {
@@ -490,7 +640,9 @@ app.whenReady().then(async () => {
     // Force color-scheme on all existing web contents immediately
     const scheme = isDark ? 'dark' : 'light';
     webContents.getAllWebContents().forEach(wc => {
-      wc.insertCSS(`:root { color-scheme: ${scheme} !important; }`).catch(() => {});
+      wc.insertCSS(`:root { color-scheme: ${scheme} !important; }`).catch((err) => {
+        console.warn('[Theme] Failed to update overlay CSS:', err);
+      });
     });
 
     mainWindow?.setTitleBarOverlay({
@@ -503,26 +655,29 @@ app.whenReady().then(async () => {
     mainWindow?.setBackgroundColor(isDark ? '#121212' : '#f8fafc');
   });
 
-  // 6. Launch automation engine (single-engine mode skips secondary Playwright runtime)
-  if (UNIFIED_AGENT_MODE) {
+  // 6. Signal readiness once the live browser bridge has had a moment to initialize.
+  console.log('[Bron] Unified live-browser mode active');
+  setTimeout(() => {
     mainWindow?.webContents.send('status:browserReady');
-  } else {
-    try {
-      await browserController.initialize();
-      startCookieSync(browserController);
-      mainWindow?.webContents.send('status:browserReady');
-    } catch (err: any) {
-      console.error('Failed to launch browser:', err);
-      mainWindow?.webContents.send('status:browserError', err.message);
-    }
-  }
+  }, 500);
 });
 
 app.on('window-all-closed', async () => {
-  stopCookieSync();
-  if (browserController) {
-    await browserController.close().catch(() => {});
+  stopWorkflowScheduler();
+  webContentsViewController?.dispose();
+  webContentsViewController = null;
+  
+  // Clean up Strata MCP connections
+  try {
+    await strata.disconnectAll();
+    logInfo('Strata MCP connections closed', 'Cleanup');
+  } catch (err) {
+    logError('Strata MCP cleanup error', 'Cleanup', {}, err as Error);
   }
+  
+  // Flush logs
+  await logger.dispose();
+  
   app.quit();
 });
 

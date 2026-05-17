@@ -32,6 +32,16 @@ const RISKY_ACTIONS_TARGETS = [
   /complete\s+(?:purchase|order)/i,
 ];
 
+const BLOCKED_SHELL_PATTERNS = [
+  /\brm\s+-rf\b/i,
+  /\bdel\s+\/[sqf]/i,
+  /\bformat\b/i,
+  /\bshutdown\b/i,
+  /\brestart-computer\b/i,
+  /\bremove-item\b.+-recurse/i,
+  /\bgit\s+reset\s+--hard\b/i,
+];
+
 export interface SafetyResult {
   safe: boolean;
   reason?: string;
@@ -105,6 +115,16 @@ export function validateAction(action: AgentAction): SafetyResult {
 
     if (!isNavKeyword && (candidate.startsWith('javascript:') || candidate.startsWith('data:'))) {
       return { safe: false, reason: 'Blocked: unsafe URL scheme.' };
+    }
+  }
+
+  // 6. Block destructive shell commands
+  if (action.action === 'filesystem_bash') {
+    const commandText = `${action.target} ${action.value} ${action.reason}`;
+    for (const pat of BLOCKED_SHELL_PATTERNS) {
+      if (pat.test(commandText)) {
+        return { safe: false, reason: 'Blocked: destructive shell command.' };
+      }
     }
   }
 

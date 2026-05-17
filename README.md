@@ -136,12 +136,19 @@ bron/
     └── renderer/                # Built React app
 ```
 
+## Architecture
+
+Bron operates in **Unified Agent Mode** by default:
+- The AI agent controls the same webview you browse in — no separate browser instance
+- When the agent acts, you see it happen live in the browser view
+- Login state, cookies, and sessions are shared between you and the agent
+
+Legacy mode (separate Playwright browser) is available but deprecated.
+
 ## Limitations
 
-- The browser content area in the Electron window shows screenshots (updated every 2s). For direct page interaction, toggle headless mode **off** in Settings to see the Chromium window.
 - Memory search is keyword-based (no vector/semantic search yet).
 - The agent has a max step limit (default: 20, configurable in Settings).
-- Playwright browsers are not bundled in the packaged exe — run `npx playwright install chromium` after install.
 - NSIS installer build (`dist:installer`) requires Windows Developer Mode or admin privileges.
 
 ## Safety

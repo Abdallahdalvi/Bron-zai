@@ -9,6 +9,7 @@ import {
   Download, 
   Bookmark, 
   Layers, 
+  Clock3,
   Puzzle, 
   Trash2, 
   Search, 
@@ -33,6 +34,8 @@ interface MoreMenuProps {
   onNewWindow: () => void;
   onNewIncognitoWindow: () => void;
   onOpenHistory: () => void;
+  onOpenBookmarks: () => void;
+  onOpenWorkflows: () => void;
   onOpenDownloads: () => void;
   onClearData: () => void;
   onExit: () => void;
@@ -51,6 +54,8 @@ const MoreMenu: React.FC<MoreMenuProps> = ({
   onNewWindow,
   onNewIncognitoWindow,
   onOpenHistory,
+  onOpenBookmarks,
+  onOpenWorkflows,
   onOpenDownloads,
   onClearData,
   onExit,
@@ -59,19 +64,32 @@ const MoreMenu: React.FC<MoreMenuProps> = ({
   onAbout,
   onNavigate
 }) => {
-  const MenuItem = ({ icon: Icon, label, shortcut, onClick, danger = false }: any) => (
+  const MenuItem = ({ icon: Icon, label, shortcut, onClick, danger = false, disabled = false }: any) => (
     <button
+      type="button"
+      disabled={disabled}
       onClick={() => {
+        if (disabled) return;
         if (onClick) onClick();
         onClose();
       }}
-      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors group ${danger ? 'text-bron-danger hover:bg-bron-danger/10' : 'text-bron-text-dim hover:bg-bron-surface/50 hover:text-bron-text'}`}
+      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors group ${
+        disabled
+          ? 'text-bron-text-dim/40 cursor-not-allowed'
+          : danger
+            ? 'text-bron-danger hover:bg-bron-danger/10'
+            : 'text-bron-text-dim hover:bg-bron-surface/50 hover:text-bron-text'
+      }`}
     >
       <div className="flex items-center gap-3">
-        <Icon className={`w-4 h-4 ${danger ? '' : 'group-hover:text-bron-accent'}`} />
+        <Icon className={`w-4 h-4 ${disabled ? '' : danger ? '' : 'group-hover:text-bron-accent'}`} />
         <span className="text-xs font-bold">{label}</span>
       </div>
-      {shortcut && <span className="text-[9px] font-black opacity-30 group-hover:opacity-60">{shortcut}</span>}
+      {disabled
+        ? <span className="text-[9px] font-black uppercase tracking-wider opacity-50">Unavailable</span>
+        : shortcut
+          ? <span className="text-[9px] font-black opacity-30 group-hover:opacity-60">{shortcut}</span>
+          : null}
     </button>
   );
 
@@ -80,7 +98,7 @@ const MoreMenu: React.FC<MoreMenuProps> = ({
       
       <div className="space-y-0.5">
         <MenuItem icon={Plus} label="New tab" shortcut="Ctrl+T" onClick={onNewTab} />
-        <MenuItem icon={Layers} label="New tab group" shortcut="Alt+Shift+P" />
+        <MenuItem icon={Layers} label="New tab group" shortcut="Alt+Shift+P" disabled />
         <MenuItem icon={WindowIcon} label="New window" shortcut="Ctrl+N" onClick={onNewWindow} />
         <MenuItem icon={Shield} label="New Incognito window" shortcut="Ctrl+Shift+N" onClick={onNewIncognitoWindow} />
       </div>
@@ -131,11 +149,12 @@ const MoreMenu: React.FC<MoreMenuProps> = ({
       <div className="my-1.5 border-t border-bron-border/20 mx-2" />
 
       <div className="space-y-0.5">
-        <MenuItem icon={Key} label="Passwords and autofill" />
+        <MenuItem icon={Key} label="Passwords and autofill" onClick={onOpenSettings} />
         <MenuItem icon={History} label="History" shortcut="Ctrl+H" onClick={onOpenHistory} />
         <MenuItem icon={Download} label="Downloads" shortcut="Ctrl+J" onClick={onOpenDownloads} />
-        <MenuItem icon={Bookmark} label="Bookmarks and lists" />
-        <MenuItem icon={Puzzle} label="Extensions" />
+        <MenuItem icon={Bookmark} label="Bookmarks and lists" onClick={onOpenBookmarks} />
+        <MenuItem icon={Clock3} label="Workflows and tasks" onClick={onOpenWorkflows} />
+        <MenuItem icon={Puzzle} label="Extensions" onClick={onOpenSettings} />
         <MenuItem icon={Trash2} label="Delete browsing data" shortcut="Ctrl+Shift+Del" onClick={onClearData} />
       </div>
 
@@ -151,17 +170,17 @@ const MoreMenu: React.FC<MoreMenuProps> = ({
           <button onClick={onZoomOut} className="p-1 hover:bg-bron-surface rounded transition-colors"><Minus className="w-3 h-3 text-bron-text" /></button>
           <span className="text-[10px] font-black px-2 w-10 text-center">100%</span>
           <button onClick={onZoomIn} className="p-1 hover:bg-bron-surface rounded transition-colors"><Plus className="w-3 h-3 text-bron-text" /></button>
-          <button className="p-1 hover:bg-bron-surface rounded transition-colors ml-1 border-l border-bron-border/20 pl-2"><Maximize2 className="w-3 h-3 text-bron-text" /></button>
+          <button type="button" disabled className="p-1 rounded transition-colors ml-1 border-l border-bron-border/20 pl-2 opacity-40 cursor-not-allowed"><Maximize2 className="w-3 h-3 text-bron-text" /></button>
         </div>
       </div>
 
       <div className="my-1.5 border-t border-bron-border/20 mx-2" />
 
       <div className="space-y-0.5">
-        <MenuItem icon={Printer} label="Print..." shortcut="Ctrl+P" />
-        <MenuItem icon={ImageIcon} label="Search with Image Search" />
-        <MenuItem icon={Languages} label="Translate..." />
-        <MenuItem icon={Monitor} label="Cast, save, and share" />
+        <MenuItem icon={Printer} label="Print..." shortcut="Ctrl+P" disabled />
+        <MenuItem icon={ImageIcon} label="Search with Image Search" disabled />
+        <MenuItem icon={Languages} label="Translate..." disabled />
+        <MenuItem icon={Monitor} label="Cast, save, and share" disabled />
       </div>
 
       <div className="my-1.5 border-t border-bron-border/20 mx-2" />

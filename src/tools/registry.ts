@@ -29,6 +29,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 
   { name: 'click', category: 'interaction', description: 'Click element by id.' },
   { name: 'click_at', category: 'interaction', description: 'Click page coordinates.' },
+  { name: 'right_click', category: 'interaction', description: 'Open a context menu on an element.' },
+  { name: 'right_click_at', category: 'interaction', description: 'Open a context menu at coordinates.' },
   { name: 'fill', category: 'interaction', description: 'Fill input fields.' },
   { name: 'clear', category: 'interaction', description: 'Clear input fields.' },
   { name: 'select_option', category: 'interaction', description: 'Select dropdown option.' },
@@ -71,6 +73,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'save_screenshot', category: 'page-actions', description: 'Save screenshot to disk.' },
   { name: 'download_file', category: 'page-actions', description: 'Trigger a file download.' },
 
+  { name: 'list_workflows', category: 'scheduling', description: 'List saved browser workflows and schedules.' },
+  { name: 'save_workflow', category: 'scheduling', description: 'Create or update a workflow, optionally with a schedule.' },
+  { name: 'delete_workflow', category: 'scheduling', description: 'Delete a saved workflow.' },
+
   { name: 'filesystem_read', category: 'filesystem', description: 'Read file contents.' },
   { name: 'filesystem_write', category: 'filesystem', description: 'Write file contents.' },
   { name: 'filesystem_edit', category: 'filesystem', description: 'Edit file with targeted replacement.' },
@@ -86,6 +92,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 
   { name: 'soul_read', category: 'identity', description: 'Read SOUL profile.' },
   { name: 'soul_update', category: 'identity', description: 'Update SOUL profile.' },
+  { name: 'list_saved_credentials', category: 'identity', description: 'List saved browser sign-ins.' },
+  { name: 'save_saved_credential', category: 'identity', description: 'Create or update a browser sign-in.' },
+  { name: 'delete_saved_credential', category: 'identity', description: 'Delete a saved browser sign-in.' },
+  { name: 'list_autofill_profiles', category: 'identity', description: 'List saved autofill profiles.' },
+  { name: 'save_autofill_profile', category: 'identity', description: 'Create or update an autofill profile.' },
+  { name: 'delete_autofill_profile', category: 'identity', description: 'Delete an autofill profile.' },
 
   {
     name: 'discover_server_categories_or_actions',
@@ -102,7 +114,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     category: 'integration',
     description: 'Search integration documentation.',
   },
-
   { name: 'suggest_schedule', category: 'scheduling', description: 'Propose recurring schedule.' },
 ];
 

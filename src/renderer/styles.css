@@ -141,19 +141,6 @@ body {
 }
 
 /* ── Webview must fill parent ─────────────────────────────────── */
-webview,
-#browser-webview {
-  position: absolute !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  border: none !important;
-  display: inline-flex !important;
-}
-
 /* ── Chat message styles ───────────────────────────────────────── */
 .chat-bubble-user {
   background: linear-gradient(135deg, #3b82f6, #2563eb);

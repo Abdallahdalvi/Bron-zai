@@ -1,11 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, Globe, Clock, Search, Trash2, ExternalLink } from 'lucide-react';
-
-interface HistoryEntry {
-  url: string;
-  title: string;
-  visited_at: string;
-}
+import type { HistoryEntry } from '../../shared/types';
 
 interface HistoryPanelProps {
   onClose: () => void;
@@ -21,7 +16,7 @@ export default function HistoryPanel({ onClose, onNavigate }: HistoryPanelProps)
     const fetchHistory = async () => {
       if (!window.bronAPI) return;
       try {
-        const data = await window.bronAPI.getHistory();
+        const data = await window.bronAPI.getHistory(200);
         setHistory(data);
       } catch (err) {
         console.error('Failed to fetch history:', err);
@@ -43,6 +38,25 @@ export default function HistoryPanel({ onClose, onNavigate }: HistoryPanelProps)
       return date.toLocaleString();
     } catch {
       return dateStr;
+    }
+  };
+
+  const removeEntry = async (entry: HistoryEntry) => {
+    try {
+      await window.bronAPI.deleteHistoryEntry(entry.id);
+      setHistory((prev) => prev.filter((item) => item.id !== entry.id));
+    } catch (err) {
+      console.error('Failed to delete history entry:', err);
+    }
+  };
+
+  const clearAll = async () => {
+    if (!confirm('Clear all browsing history?')) return;
+    try {
+      await window.bronAPI.clearHistory();
+      setHistory([]);
+    } catch (err) {
+      console.error('Failed to clear history:', err);
     }
   };
 
@@ -97,9 +111,9 @@ export default function HistoryPanel({ onClose, onNavigate }: HistoryPanelProps)
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredHistory.map((item, idx) => (
+              {filteredHistory.map((item) => (
                 <div 
-                  key={idx}
+                  key={item.id}
                   className="group flex items-center justify-between p-4 rounded-2xl hover:bg-white/5 border border-transparent hover:border-white/5 transition-all cursor-pointer"
                   onClick={() => {
                     onNavigate(item.url);
@@ -117,8 +131,24 @@ export default function HistoryPanel({ onClose, onNavigate }: HistoryPanelProps)
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <span className="text-[10px] text-white/20 font-medium">{formatDate(item.visited_at)}</span>
-                    <button className="w-8 h-8 rounded-lg bg-white/0 hover:bg-white/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNavigate(item.url);
+                        onClose();
+                      }}
+                      className="w-8 h-8 rounded-lg bg-white/0 hover:bg-white/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                    >
                       <ExternalLink className="w-4 h-4 text-white/40" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeEntry(item);
+                      }}
+                      className="w-8 h-8 rounded-lg bg-white/0 hover:bg-red-500/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 className="w-4 h-4 text-red-400" />
                     </button>
                   </div>
                 </div>
@@ -131,7 +161,10 @@ export default function HistoryPanel({ onClose, onNavigate }: HistoryPanelProps)
           <p className="text-[10px] text-bron-text-dim font-bold uppercase tracking-widest">
             {filteredHistory.length} ENTRIES FOUND
           </p>
-          <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition-all">
+          <button
+            onClick={clearAll}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold transition-all"
+          >
             <Trash2 className="w-4 h-4" />
             Clear All History
           </button>

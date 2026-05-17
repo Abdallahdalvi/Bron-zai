@@ -4,5 +4,28 @@
   "scss.lint.unknownAtRules": "ignore",
   "tailwindCSS.includeLanguages": {
     "plaintext": "css"
+  },
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/release/**": true,
+    "**/graphify-out/**": true,
+    "**/.graphify/**": true,
+    "**/backup-messed-up/**": true,
+    "**/scratch/**": true,
+    "**/src-recovered/**": true,
+    "**/out+/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/release": true,
+    "**/graphify-out": true,
+    "**/.graphify": true,
+    "**/backup-messed-up": true,
+    "**/scratch": true,
+    "**/src-recovered": true,
+    "**/out+": true
   }
 }

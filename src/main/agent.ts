@@ -1,12 +1,44 @@
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
+import { exec as execCallback } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { AgentAutomationController } from './automationController';
+import { promisify } from 'util';
+import type { AgentAutomationController } from './agentAutomation';
 import { callOpenRouter, ChatTurn, enhancePrompt } from './openrouter';
 import { validateAction } from './safety';
-import { addMemory, createTask, updateTaskStatus, addStep, getSettings, addCreditUsage } from './memory';
+import {
+  addMemory,
+  createTask,
+  updateTaskStatus,
+  addStep,
+  getSettings,
+  addCreditUsage,
+  getBookmarks,
+  createBookmark,
+  updateBookmark,
+  removeBookmark,
+  searchBookmarks,
+  getHistory,
+  deleteHistoryUrl,
+  deleteHistoryRange,
+  getBrowserExtensions,
+  getSavedCredentials,
+  getAutofillProfiles,
+  getWorkflows,
+  getWorkflowSchedules,
+  saveWorkflow,
+  deleteWorkflow,
+  saveWorkflowSchedule,
+  updateWorkflowRun,
+  saveSavedCredential,
+  deleteSavedCredential,
+  saveAutofillProfile,
+  deleteAutofillProfile,
+} from './memory';
 import { AgentAction, AgentAttachment, AgentRunRequest, IPC } from '../shared/types';
 import { SYSTEM_PROMPT } from '../agent/prompt';
+import { strata } from '../integrations/strata';
+import { TOOL_DEFINITIONS } from '../tools/registry';
 import {
   readCore,
   readSoul,
@@ -19,6 +51,7 @@ import {
 let isRunning = false;
 let shouldStop = false;
 let currentAbortController: AbortController | null = null;
+const execAsync = promisify(execCallback);
 
 export function isAgentRunning(): boolean {
   return isRunning;
@@ -47,6 +80,8 @@ export async function runAgent(
   const attachments = parsedTaskInput.attachments;
   const contextMessages = parsedTaskInput.contextMessages;
   const sessionId = parsedTaskInput.sessionId;
+  const workflowId = parsedTaskInput.workflowId;
+  const workflowRunId = parsedTaskInput.workflowRunId;
   const recruitingAwareTask = augmentTaskForRecruiting(rawTask, attachments, contextMessages);
   const task = augmentTaskForStructuredOutput(recruitingAwareTask, attachments, contextMessages);
   const attachmentPrompt = buildAttachmentPrompt(attachments);
@@ -78,7 +113,7 @@ export async function runAgent(
   // ── Prompt Enhancement Step (ChatGPT 5.1 Engine) ──
   let optimizedTask = task;
   let enhancerUsage: any = null;
-  if (!isChatMode) {
+  if (!isChatMode && settings.agentPromptEnhancement !== false) {
     try {
       send(IPC.AGENT_STEP, {
         step: 0,
@@ -109,7 +144,7 @@ export async function runAgent(
        2. DO NOT suggest any browser actions (search, click, open_url, etc.).
        3. If you cannot answer from history, explain that you would need to switch back to Research Mode to find more info.
        4. Return your response as a JSON object with "thought" and "action": "done", "value": "your answer".`
-    : SYSTEM_PROMPT;
+    : `${SYSTEM_PROMPT}\n\n${buildCapabilityBootstrap(settings, browserController)}`;
 
   const runStartedAt = Date.now();
   let step = 0;
@@ -148,6 +183,15 @@ export async function runAgent(
 
       if (maxSteps > 0 && step > maxSteps) {
         const elapsedMs = Date.now() - runStartedAt;
+        if (workflowRunId) {
+          updateWorkflowRun(workflowRunId, {
+            status: 'failed',
+            result_summary: `Stopped at step limit (${maxSteps}).`,
+            step_count: step,
+            error_message: 'Step limit reached.',
+            ended_at: new Date().toISOString(),
+          });
+        }
         send(IPC.AGENT_DONE, {
           message: `Step limit reached (${maxSteps}). Stopping after ${formatDuration(elapsedMs)}.`,
           steps: step,
@@ -177,6 +221,15 @@ export async function runAgent(
           });
 
           if (browserRecoveryRetries >= 8) {
+            if (workflowRunId) {
+              updateWorkflowRun(workflowRunId, {
+                status: 'failed',
+                result_summary: 'Browser engine could not reconnect in time.',
+                step_count: step,
+                error_message: 'Browser engine reconnect timeout.',
+                ended_at: new Date().toISOString(),
+              });
+            }
             send(
               IPC.AGENT_ERROR,
               'Browser engine could not reconnect in time. Please refresh once and try again.',
@@ -186,10 +239,22 @@ export async function runAgent(
           }
 
           await sleep(1200);
-          continue;
+          continue; // Skip this iteration - state will be fetched again on retry
         }
 
-        throw err;
+        // For non-reconnection errors, report and stop
+        if (workflowRunId) {
+          updateWorkflowRun(workflowRunId, {
+            status: 'failed',
+            result_summary: `Failed to get browser state: ${msg}`,
+            step_count: step,
+            error_message: msg,
+            ended_at: new Date().toISOString(),
+          });
+        }
+        send(IPC.AGENT_ERROR, `Failed to get browser state: ${msg}`);
+        updateTaskStatus(taskId, 'failed');
+        return;
       }
 
       const memories = runMemories
@@ -223,6 +288,7 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         lastResult,
         loopWarning + siteInfo,
         continuityContext,
+        settings,
       );
 
       send(IPC.AGENT_STEP, {
@@ -352,6 +418,19 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
       }
       action = heuristic.action;
 
+      const destructiveMismatch = getDestructiveIntentMismatch(action, rawTask || task);
+      if (destructiveMismatch) {
+        lastResult = `BLOCKED: ${destructiveMismatch}`;
+        addStep(taskId, step, action.action, action.target, action.value, `BLOCKED: ${destructiveMismatch}`);
+        send(IPC.AGENT_STEP, {
+          step,
+          type: 'blocked',
+          message: destructiveMismatch,
+          action,
+        });
+        continue;
+      }
+
       const safety = validateAction(action);
       if (!safety.safe) {
         send(IPC.AGENT_STEP, {
@@ -379,8 +458,8 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
 
       const actionSignature = buildActionSignature(action);
       const knownFailures = failedActionCounts.get(actionSignature) || 0;
-      if (knownFailures >= 2) {
-        const msg = `Skipping repeated failing action (${action.action}). Trying a different path.`;
+      if (knownFailures >= 5) {
+        const msg = `Skipping ${action.action} after 5 failures globally. Trying different approach.`;
         lastResult = msg;
         addStep(taskId, step, action.action, action.target, action.value, `SKIPPED_REPEAT_FAIL: ${msg}`);
         send(IPC.AGENT_STEP, {
@@ -392,9 +471,12 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         continue;
       }
 
-      const repeatLimitedActions = new Set(['click', 'type', 'fill', 'press_enter', 'press_key', 'select_option']);
+      // Loop prevention: block exact same action+target after too many repeats
+      // Note: Consecutive fill/type on DIFFERENT selectors is OK (forms have multiple fields)
+      const repeatLimitedActions = new Set(['click', 'press_enter', 'press_key', 'select_option']);
       const repeatedSuccesses = repeatedActionCounts.get(actionSignature) || 0;
-      const maxRepeats = action.action === 'click' ? 3 : 2;
+      const isFormField = ['type', 'fill', 'clear'].includes(action.action);
+      const maxRepeats = action.action === 'click' ? 5 : (isFormField ? 15 : 3);
       if (repeatLimitedActions.has(action.action) && repeatedSuccesses >= maxRepeats) {
         const msg = `Skipping repetitive action (${action.action}) to prevent loops.`;
         lastResult = msg;
@@ -425,6 +507,7 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         },
         sessionId,
         taskId,
+        getWindow,
       );
       lastResult = result;
       if (isFailureResult(result)) {
@@ -432,15 +515,19 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         repeatedActionCounts.delete(actionSignature);
       } else {
         failedActionCounts.delete(actionSignature);
-        const repeatLimitedActions = new Set(['click', 'type', 'fill', 'press_enter', 'press_key', 'select_option']);
-        if (repeatLimitedActions.has(action.action)) {
+        // Track repeats for loop prevention (exclude form fields on different targets)
+        const repeatTrackingActions = new Set(['click', 'press_enter', 'press_key', 'select_option']);
+        if (repeatTrackingActions.has(action.action)) {
+          repeatedActionCounts.set(actionSignature, (repeatedActionCounts.get(actionSignature) || 0) + 1);
+        } else if (['type', 'fill', 'clear'].includes(action.action)) {
+          // Only count as repeat if same selector (forms legitimately use different fields)
           repeatedActionCounts.set(actionSignature, (repeatedActionCounts.get(actionSignature) || 0) + 1);
         } else {
           repeatedActionCounts.delete(actionSignature);
         }
       }
 
-      if (result.toLowerCase().includes('failed') || result.toLowerCase().includes('timeout') || result.toLowerCase().includes('blocked') || result.toLowerCase().includes('access denied') || result.toLowerCase().includes('403')) {
+      if (shouldMarkSiteBlocked(result)) {
         try {
           const state2 = await browserController.getBrowserState();
           const failedDomain = new URL(state2.url).hostname;
@@ -473,6 +560,23 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         const elapsedMs = Date.now() - runStartedAt;
         let finalMessage = formatFinalAnswerForDisplay(action.value || action.reason || 'Task completed.');
         if (!isChatMode) {
+          const isGeneric = !finalMessage || finalMessage.trim().toLowerCase() === 'task completed.' || finalMessage.length < 30;
+          if (isGeneric) {
+            send(IPC.AGENT_STEP, { step, type: 'thinking', message: 'Synthesizing report...' });
+            try {
+              // Create a fresh controller for synthesis to avoid "never" type issues and ensure it's abortable
+              const synthController = new AbortController();
+              finalMessage = await synthesizeFinalAnswerFromContext(
+                settings.apiKey,
+                rawTask || task,
+                conversationHistory,
+                runMemories,
+                synthController.signal
+              );
+            } catch (err) {
+              console.error('Synthesis failed:', err);
+            }
+          }
           finalMessage = await enrichFinalAnswerWithPageContext(
             rawTask || task,
             finalMessage,
@@ -484,6 +588,14 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
           steps: step,
           runtimeMs: elapsedMs,
         });
+        if (workflowRunId) {
+          updateWorkflowRun(workflowRunId, {
+            status: 'completed',
+            result_summary: finalMessage.slice(0, 12000),
+            step_count: step,
+            ended_at: new Date().toISOString(),
+          });
+        }
         updateTaskStatus(taskId, 'completed');
         return;
       }
@@ -493,6 +605,15 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
 
     if (shouldStop) {
       const elapsedMs = Date.now() - runStartedAt;
+      if (workflowRunId) {
+        updateWorkflowRun(workflowRunId, {
+          status: 'stopped',
+          result_summary: `Stopped by user after ${formatDuration(elapsedMs)}.`,
+          step_count: step,
+          error_message: 'Stopped by user.',
+          ended_at: new Date().toISOString(),
+        });
+      }
       send(IPC.AGENT_DONE, {
         message: `Agent stopped by user after ${formatDuration(elapsedMs)}.`,
         steps: step,
@@ -502,6 +623,14 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
     } else {
       console.log('[Agent] Loop exited unexpectedly. step:', step, 'shouldStop:', shouldStop);
       const elapsedMs = Date.now() - runStartedAt;
+      if (workflowRunId) {
+        updateWorkflowRun(workflowRunId, {
+          status: 'completed',
+          result_summary: `Agent finished after ${step} steps in ${formatDuration(elapsedMs)}.`,
+          step_count: step,
+          ended_at: new Date().toISOString(),
+        });
+      }
       send(IPC.AGENT_DONE, {
         message: `Agent finished after ${step} steps in ${formatDuration(elapsedMs)}.`,
         steps: step,
@@ -510,6 +639,15 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
       updateTaskStatus(taskId, 'completed');
     }
   } catch (err: any) {
+    if (workflowRunId) {
+      updateWorkflowRun(workflowRunId, {
+        status: 'failed',
+        result_summary: `Agent error: ${err.message}`,
+        step_count: step,
+        error_message: String(err.message || err),
+        ended_at: new Date().toISOString(),
+      });
+    }
     send(IPC.AGENT_ERROR, `Agent error: ${err.message}`);
     updateTaskStatus(taskId, 'failed');
   } finally {
@@ -528,6 +666,7 @@ function buildUserMessage(
   lastResult: string = '',
   loopWarning: string = '',
   continuityContext: string = '',
+  settings?: { agentFullAccess?: boolean; agentToolHints?: boolean; autoSaveSignIns?: boolean; workflowSchedulerEnabled?: boolean; domainProfiles?: string },
 ): string {
   const memoryStr =
     memories.length > 0
@@ -557,7 +696,7 @@ function buildUserMessage(
       : '  (none visible)';
 
   const tabsStr = state.tabs
-    .map((t: any) => `  ${t.active ? '->' : ' '} [${t.id}] ${t.title} (${t.url})`)
+    .map((t: any) => `  ${t.active ? '->' : ' '} [${t.id}]${t.groupId ? ` {${t.groupId}}` : ''} ${t.title} (${t.url})`)
     .join('\n');
 
   const stepWarning = maxSteps > 0 && step >= maxSteps
@@ -570,15 +709,26 @@ function buildUserMessage(
   const priorContextStr = continuityContext
     ? `\nPRIOR CHAT CONTEXT:\n${continuityContext}\n`
     : '';
+  const accessModeLine = settings?.agentFullAccess === false
+    ? 'STANDARD ACCESS MODE: Ask before destructive actions outside the explicit task.'
+    : 'FULL ACCESS MODE: Use built-in browser, file, history, bookmark, download, and connected app tools directly when they help.';
+  const hintModeLine = settings?.agentToolHints === false
+    ? 'RUNTIME HINTS: condensed'
+    : 'RUNTIME HINTS: full capability bootstrap active';
+  const siteHints = buildSiteProfileHints(state, settings?.domainProfiles);
+  const siteHintStr = siteHints ? `\nSITE PROFILE HINTS:\n${siteHints}\n` : '';
 
   return `TASK: ${task}
 
 STEP: ${step}/${maxSteps}${stepWarning}${loopWarning}
 ${lastResultStr}
 ${priorContextStr}
+${accessModeLine}
+${hintModeLine}
 CURRENT TAB: ${state.tabs.find((t: any) => t.active)?.id || 'none'}
 URL: ${state.url}
 TITLE: ${state.title}
+${siteHintStr}
 
 OPEN TABS:
 ${tabsStr}
@@ -598,6 +748,169 @@ ${memoryStr}
 Choose your next action. Return ONLY valid JSON.`;
 }
 
+function buildSiteProfileHints(state: any, rawDomainProfiles?: string): string {
+  const url = String(state?.url || '').toLowerCase();
+  const text = String(state?.visibleText || '').toLowerCase();
+  const hints: string[] = [];
+
+  if (url.includes('docs.google.com/forms')) {
+    hints.push('- Google Forms: prefer visible text targets like "Blank form" and direct editor actions over brittle CSS guesses.');
+    hints.push('- If the template gallery is visible, do not mark the site blocked just because one card selector fails.');
+  }
+  if (url.includes('web.whatsapp.com')) {
+    hints.push('- WhatsApp Web: context menus often need hover plus native pointer interaction on the chat row or row action button.');
+    hints.push('- Avoid repeating the same chat click loop. If delete/archive is the goal, target the row context button or row menu.');
+  }
+  if (/signin|login|auth|accounts\.google\.com|typeform\.com\/signup/.test(url)) {
+    hints.push('- Auth flow: prefer username/password fields, then wait for navigation or account chooser changes before retrying.');
+  }
+  if (/otp|verification|2-step|two-step|2fa|security code/.test(text)) {
+    hints.push('- Verification flow detected: do not autofill passwords into code fields, and avoid repeating submits while waiting for the challenge state to change.');
+  }
+  const customHint = resolveDomainProfileHint(rawDomainProfiles, url);
+  if (customHint) {
+    hints.push(`- Custom site profile: ${customHint}`);
+  }
+  return hints.join('\n');
+}
+
+function parseDomainProfileHints(raw: string | undefined): Record<string, string> {
+  const text = String(raw || '').trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [domain, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const key = String(domain || '').trim().toLowerCase();
+      const note = typeof value === 'string'
+        ? value.trim()
+        : value && typeof value === 'object' && 'note' in (value as Record<string, unknown>)
+          ? String((value as Record<string, unknown>).note || '').trim()
+          : '';
+      if (key && note) out[key] = note;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function resolveDomainProfileHint(raw: string | undefined, pageUrl: string): string {
+  const map = parseDomainProfileHints(raw);
+  if (!pageUrl) return '';
+  try {
+    const host = new URL(pageUrl).hostname.toLowerCase();
+    for (const [domain, note] of Object.entries(map)) {
+      if (host === domain || host.endsWith(`.${domain}`) || domain.endsWith(host)) {
+        return note;
+      }
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function getDestructiveIntentMismatch(action: AgentAction, taskText: string): string | null {
+  const combined = `${action.target || ''} ${action.value || ''} ${action.reason || ''}`.toLowerCase();
+  const destructive = /\b(delete|remove|clear|erase|trash|destroy|close account|sign out all)\b/.test(combined)
+    || ['delete_history_url', 'delete_history_range', 'remove_bookmark', 'delete_workflow', 'delete_saved_credential', 'delete_autofill_profile'].includes(action.action);
+  if (!destructive) return null;
+
+  const taskLower = String(taskText || '').toLowerCase();
+  const userAskedForIt = /\b(delete|remove|clear|erase|trash|cleanup|clean up)\b/.test(taskLower);
+  if (userAskedForIt) return null;
+  return 'Destructive action does not match the user task closely enough. Re-check intent before deleting or clearing data.';
+}
+
+function buildCapabilityBootstrap(
+  settings: { headless?: boolean; agentFullAccess?: boolean; agentToolHints?: boolean; autoSaveSignIns?: boolean; workflowSchedulerEnabled?: boolean; domainProfiles?: string },
+  browserController: AgentAutomationController,
+): string {
+  if (settings.agentToolHints === false) {
+    return [
+      '## Runtime Capability Bootstrap',
+      `- Automation engine: ${browserController.constructor?.name || 'UnknownController'}`,
+      `- Full agent access: ${settings.agentFullAccess === false ? 'disabled' : 'enabled'}`,
+      `- Workspace root: ${process.cwd()}`,
+      `- Downloads directory: ${app.getPath('downloads')}`,
+      '- Use the listed browser, file, and integration tools directly when helpful.',
+    ].join('\n');
+  }
+
+  const grouped = new Map<string, string[]>();
+  for (const tool of TOOL_DEFINITIONS) {
+    const existing = grouped.get(tool.category) || [];
+    existing.push(tool.name);
+    grouped.set(tool.category, existing);
+  }
+
+  const categoryOrder = [
+    'observation',
+    'interaction',
+    'navigation',
+    'bookmarks',
+    'history',
+    'tab-groups',
+    'page-actions',
+    'filesystem',
+    'memory',
+    'identity',
+    'integration',
+    'scheduling',
+  ];
+
+  const toolLines = categoryOrder
+    .filter((category) => grouped.has(category))
+    .map((category) => {
+      const names = grouped.get(category) || [];
+      return `- ${category} (${names.length}): ${names.join(', ')}`;
+    });
+
+  let connectionSummary = 'none connected';
+  try {
+    const allConnections = typeof (strata as any).getAllConnections === 'function'
+      ? (strata as any).getAllConnections()
+      : [];
+    const connected = Array.isArray(allConnections)
+      ? allConnections.filter((entry: any) => entry?.connected).map((entry: any) => entry.appName)
+      : [];
+    connectionSummary = connected.length > 0 ? connected.join(', ') : 'none connected';
+  } catch {
+    connectionSummary = 'unknown';
+  }
+
+  const engineName = browserController.constructor?.name || 'UnknownController';
+  const engineSummary = /WebContentsViewController/i.test(engineName)
+    ? 'Unified live browser automation through the main-process Chromium host with native pointer control, screenshots, downloads, and browser-managed tab coordination.'
+    : 'Unified browser automation controller.';
+  const extensionCount = getBrowserExtensions().filter((entry) => entry.enabled).length;
+  const savedCredentialCount = getSavedCredentials().length;
+  const autofillProfileCount = getAutofillProfiles().length;
+  const domainProfileCount = Object.keys(parseDomainProfileHints(settings.domainProfiles)).length;
+
+  return [
+    '## Runtime Capability Bootstrap',
+    '- Assume this capability block is authoritative for the entire run.',
+    `- Automation engine: ${engineName}. ${engineSummary}`,
+    `- Full agent access: ${settings.agentFullAccess === false ? 'disabled' : 'enabled'}. When enabled, do not ask the user for permission to use built-in tools; just use them.`,
+    '- Runtime architecture: single live browser controller bound to the visible session. There is no parallel shadow browser in the normal path.',
+    `- Workspace root: ${process.cwd()}`,
+    `- Downloads directory: ${app.getPath('downloads')}`,
+    `- Connected app actions: ${connectionSummary}`,
+    `- Browser-managed extensions: ${extensionCount} enabled`,
+    `- Browser-managed passwords/autofill: ${savedCredentialCount} saved sign-ins, ${autofillProfileCount} autofill profiles`,
+    `- Browser-managed workflow scheduler: ${settings.workflowSchedulerEnabled === false ? 'paused' : 'enabled'} with ${getWorkflows().length} saved workflows`,
+    `- Automatic sign-in capture: ${settings.autoSaveSignIns === false ? 'disabled' : 'enabled'} for detected successful logins`,
+    `- Domain-specific site profiles: ${domainProfileCount} configured`,
+    '- Safety boundaries: workspace file tools must stay inside the workspace root; avoid storing passwords/tokens in memory; only delete browsing history when the task explicitly asks; stop on CAPTCHA or hard access blocks.',
+    '- Tool catalog:',
+    ...toolLines,
+    '- Tool orchestration rule: combine multiple tools whenever helpful. You are not limited to one browser action at a time.',
+  ].join('\n');
+}
+
 async function executeAction(
   action: AgentAction,
   bc: AgentAutomationController,
@@ -605,6 +918,7 @@ async function executeAction(
   onRemember?: (memory: { key: string; value: string }) => void,
   sessionId?: number,
   taskId?: number,
+  getWindow?: () => BrowserWindow | null,
 ): Promise<string> {
   try {
     switch (action.action) {
@@ -709,6 +1023,24 @@ async function executeAction(
         return await bc.click(selector);
       }
 
+      case 'click_at': {
+        const point = parsePointSpec(action.target || action.value);
+        if (!point) return 'click_at failed: expected coordinates like "120,340".';
+        return await bc.clickAt(point.x, point.y);
+      }
+
+      case 'right_click': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'clickable');
+        await bc.highlightElement(selector);
+        return await bc.rightClick(selector);
+      }
+
+      case 'right_click_at': {
+        const point = parsePointSpec(action.target || action.value);
+        if (!point) return 'right_click_at failed: expected coordinates like "120,340".';
+        return await bc.rightClickAt(point.x, point.y);
+      }
+
       case 'fill':
       case 'type': {
         const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
@@ -722,6 +1054,25 @@ async function executeAction(
         return await bc.typeText(selector, '');
       }
 
+      case 'upload_file': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
+        await bc.highlightElement(selector);
+        const uploadFiles = await loadUploadFilePayloads(action.value || action.reason);
+        return await bc.uploadFiles(selector, uploadFiles);
+      }
+
+      case 'check': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
+        await bc.highlightElement(selector);
+        return await bc.check(selector);
+      }
+
+      case 'uncheck': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
+        await bc.highlightElement(selector);
+        return await bc.uncheck(selector);
+      }
+
       case 'select_option': {
         const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
         await bc.highlightElement(selector);
@@ -729,18 +1080,64 @@ async function executeAction(
       }
 
       case 'press_key': {
-        const key = String(action.value || action.target || '').trim().toLowerCase();
+        const rawKey = String(action.value || action.target || '').trim();
+        const key = rawKey.toLowerCase();
         if (!key || key === 'enter' || key === 'return') {
           return await bc.pressEnter();
         }
-        return `press_key currently supports only Enter. Requested: ${action.value || action.target}`;
+        // rawKey already declared
+        let normalizedKey = rawKey;
+        const keyLower = key;
+        if (keyLower === 'tab') normalizedKey = 'Tab';
+        else if (keyLower === 'escape' || keyLower === 'esc') normalizedKey = 'Escape';
+        else if (keyLower === 'backspace') normalizedKey = 'Backspace';
+        else if (keyLower === 'delete' || keyLower === 'del') normalizedKey = 'Delete';
+        else if (keyLower === 'arrowup' || keyLower === 'up') normalizedKey = 'ArrowUp';
+        else if (keyLower === 'arrowdown' || keyLower === 'down') normalizedKey = 'ArrowDown';
+        else if (keyLower === 'arrowleft' || keyLower === 'left') normalizedKey = 'ArrowLeft';
+        else if (keyLower === 'arrowright' || keyLower === 'right') normalizedKey = 'ArrowRight';
+        else if (keyLower === 'space') normalizedKey = 'Space';
+        return await bc.pressKey(normalizedKey);
       }
 
       case 'press_enter':
         return await bc.pressEnter();
 
+      case 'focus': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'input');
+        await bc.highlightElement(selector);
+        return await bc.focus(selector);
+      }
+
+      case 'hover': {
+        const selector = await resolveSelectorFromActionTarget(action.target, bc, 'clickable');
+        await bc.highlightElement(selector);
+        return await bc.hover(selector);
+      }
+
+      case 'hover_at': {
+        const point = parsePointSpec(action.target || action.value);
+        if (!point) return 'hover_at failed: expected coordinates like "120,340".';
+        return await bc.hoverAt(point.x, point.y);
+      }
+
       case 'scroll':
         return await bc.scroll(action.value || action.target || 'down');
+
+      case 'drag': {
+        const sourceSelector = await resolveSelectorFromActionTarget(action.target, bc, 'clickable');
+        const targetSelector = await resolveSelectorFromActionTarget(action.value, bc, 'clickable');
+        await bc.highlightElement(sourceSelector);
+        return await bc.drag(sourceSelector, targetSelector);
+      }
+
+      case 'drag_at': {
+        const sourceSelector = await resolveSelectorFromActionTarget(action.target, bc, 'clickable');
+        const point = parsePointSpec(action.value);
+        if (!point) return 'drag_at failed: expected value coordinates like "120,340".';
+        await bc.highlightElement(sourceSelector);
+        return await bc.dragAt(sourceSelector, point.x, point.y);
+      }
 
       case 'summarize': {
         const state = await bc.getBrowserState();
@@ -749,9 +1146,14 @@ async function executeAction(
 
       case 'new_page':
       case 'new_tab': {
+        // HARD LIMIT: Max 8 tabs total
+        const currentTabs = await bc.getTabs();
+        if (currentTabs.length >= 8) {
+          return 'ERROR: Maximum 8 tabs reached. Complete task on current tabs instead of opening new ones.';
+        }
         const target = action.target || action.value || undefined;
         const tabId = await bc.newTab(target);
-        return `Opened new tab: ${tabId}`;
+        return `Opened new tab: ${tabId} (${currentTabs.length + 1}/8 tabs)`;
       }
 
       case 'switch_tab':
@@ -776,6 +1178,330 @@ async function executeAction(
         const active = state.tabs.find((tab) => tab.active);
         if (!active) return 'No active page.';
         return `Active page: [${active.id}] ${active.title} (${active.url})`;
+      }
+
+      case 'get_bookmarks': {
+        const bookmarks = getBookmarks();
+        if (!bookmarks.length) return 'No bookmarks saved.';
+        return bookmarks
+          .map((entry) => `[${entry.id}] ${entry.title} (${entry.url}) - ${entry.folder}`)
+          .join('\n');
+      }
+
+      case 'create_bookmark': {
+        const state = await bc.getBrowserState();
+        const bookmark = createBookmark({
+          title: String(action.reason || state.title || action.target || action.value || '').trim(),
+          url: String(action.target || action.value || state.url).trim(),
+          folder: parseBookmarkFolder(action.reason),
+        });
+        return `Created bookmark [${bookmark.id}] ${bookmark.title} (${bookmark.url})`;
+      }
+
+      case 'remove_bookmark': {
+        const bookmarkId = Number(action.target || action.value);
+        if (!Number.isFinite(bookmarkId)) return 'remove_bookmark: missing bookmark id.';
+        removeBookmark(bookmarkId);
+        return `Removed bookmark ${bookmarkId}.`;
+      }
+
+      case 'update_bookmark': {
+        const bookmarkId = Number(action.target);
+        if (!Number.isFinite(bookmarkId)) return 'update_bookmark: missing bookmark id.';
+        const updates = parseBookmarkUpdateSpec(action.value);
+        const updated = updateBookmark(bookmarkId, updates);
+        if (!updated) return `update_bookmark: bookmark ${bookmarkId} not found.`;
+        return `Updated bookmark [${updated.id}] ${updated.title} (${updated.url})`;
+      }
+
+      case 'move_bookmark': {
+        const bookmarkId = Number(action.target);
+        const nextPosition = Number(action.value);
+        if (!Number.isFinite(bookmarkId) || !Number.isFinite(nextPosition)) {
+          return 'move_bookmark: expected target=id and value=position.';
+        }
+        const moved = updateBookmark(bookmarkId, {
+          position: nextPosition,
+          folder: parseBookmarkFolder(action.reason),
+        });
+        if (!moved) return `move_bookmark: bookmark ${bookmarkId} not found.`;
+        return `Moved bookmark ${bookmarkId} to position ${nextPosition}.`;
+      }
+
+      case 'search_bookmarks': {
+        const results = searchBookmarks(action.value || action.target);
+        if (!results.length) return `No bookmarks matched "${action.value || action.target}".`;
+        return results
+          .map((entry) => `[${entry.id}] ${entry.title} (${entry.url}) - ${entry.folder}`)
+          .join('\n');
+      }
+
+      case 'search_history':
+      case 'get_recent_history': {
+        const query = String(action.value || action.target || '').trim().toLowerCase();
+        const history = getHistory(120);
+        const filtered = query
+          ? history.filter(
+              (entry) =>
+                entry.url.toLowerCase().includes(query) ||
+                entry.title.toLowerCase().includes(query),
+            )
+          : history;
+        if (!filtered.length) return query ? `No history matched "${query}".` : 'No browsing history.';
+        return filtered
+          .slice(0, 60)
+          .map((entry) => `[${entry.id}] ${entry.title || entry.url} (${entry.url}) @ ${entry.visited_at}`)
+          .join('\n');
+      }
+
+      case 'delete_history_url': {
+        const url = String(action.target || action.value || '').trim();
+        if (!url) return 'delete_history_url: missing URL.';
+        deleteHistoryUrl(url);
+        return `Deleted history entries for ${url}`;
+      }
+
+      case 'delete_history_range': {
+        const { start, end } = parseHistoryDeleteRange(action.value || action.target);
+        deleteHistoryRange(start, end);
+        return `Deleted history range${start || end ? ` from ${start || '-infinity'} to ${end || '+infinity'}` : ''}.`;
+      }
+
+      case 'list_tab_groups': {
+        const groups = await bc.listTabGroups();
+        if (!groups.length) return 'No tab groups exist.';
+        return groups
+          .map((group) => `[${group.id}] ${group.title}${group.color ? ` (${group.color})` : ''} -> ${group.tabIds.join(', ')}`)
+          .join('\n');
+      }
+
+      case 'group_tabs': {
+        const parsed = parseTabGroupSpec(action.value);
+        const fallbackIds = parseTabIdList(action.target);
+        const activeTabId = bc.getActiveTabId();
+        const tabIds = parsed.tabIds.length
+          ? parsed.tabIds
+          : fallbackIds.length
+            ? fallbackIds
+            : activeTabId
+              ? [activeTabId]
+              : [];
+        if (!tabIds.length) return 'group_tabs: no tabs provided.';
+        const group = await bc.groupTabs(tabIds, {
+          id: parsed.id || undefined,
+          title: parsed.title || String(action.reason || '').trim() || undefined,
+          color: parsed.color || parseColorHint(action.reason) || undefined,
+        });
+        return `Created tab group [${group.id}] ${group.title} with tabs: ${group.tabIds.join(', ')}`;
+      }
+
+      case 'update_tab_group': {
+        const parsed = parseTabGroupSpec(action.value);
+        const groupId = String(action.target || parsed.id || '').trim();
+        if (!groupId) return 'update_tab_group: missing group id.';
+        const updated = await bc.updateTabGroup(groupId, {
+          title: parsed.title || String(action.reason || '').trim() || undefined,
+          color: parsed.color || parseColorHint(action.reason) || undefined,
+        });
+        if (!updated) return `update_tab_group: group ${groupId} not found.`;
+        return `Updated tab group [${updated.id}] ${updated.title}${updated.color ? ` (${updated.color})` : ''}.`;
+      }
+
+      case 'ungroup_tabs': {
+        const parsed = parseTabGroupSpec(action.value);
+        const targetText = String(action.target || '').trim();
+        const tabIds = parsed.tabIds.length ? parsed.tabIds : parseTabIdList(targetText);
+        const inferredGroupId = parsed.id || (tabIds.length === 0 ? targetText : '');
+        const removed = await bc.ungroupTabs(tabIds, inferredGroupId || undefined);
+        if (!removed) return inferredGroupId
+          ? `ungroup_tabs: group ${inferredGroupId} not found.`
+          : 'ungroup_tabs: no matching grouped tabs found.';
+        return `Ungrouped ${removed} tab${removed === 1 ? '' : 's'}.`;
+      }
+
+      case 'close_tab_group': {
+        const groupId = String(action.target || action.value || '').trim();
+        if (!groupId) return 'close_tab_group: missing group id.';
+        const closed = await bc.closeTabGroup(groupId);
+        if (!closed) return `close_tab_group: group ${groupId} not found.`;
+        return `Closed ${closed} tab${closed === 1 ? '' : 's'} from group ${groupId}.`;
+      }
+
+      case 'save_pdf': {
+        const state = await bc.getBrowserState();
+        const pdfBase64 = await bc.getPdfData();
+        if (!pdfBase64) return 'save_pdf failed: PDF capture unavailable.';
+        const filePath = await writeAgentArtifactBuffer(
+          pdfBase64,
+          'pdf',
+          parseArtifactHint(action.value || action.reason),
+          state.title || 'page',
+        );
+        return `Saved PDF to ${filePath}`;
+      }
+
+      case 'save_screenshot': {
+        const state = await bc.getBrowserState();
+        const image = await bc.getScreenshot();
+        if (!image) return 'save_screenshot failed: screenshot capture unavailable.';
+        const filePath = await writeAgentArtifactBuffer(
+          image,
+          'png',
+          parseArtifactHint(action.value || action.reason),
+          state.title || 'screenshot',
+        );
+        return `Saved screenshot to ${filePath}`;
+      }
+
+      case 'download_file': {
+        const request = parseDownloadRequest(action.target, action.value, action.reason);
+        const state = await bc.getBrowserState();
+        const url = request.url || state.url;
+        if (!url) return 'download_file: missing URL.';
+        const filePath = await downloadUrlWithWindowSession(getWindow, url, request.filename);
+        return `Downloaded file to ${filePath}`;
+      }
+
+      case 'list_workflows': {
+        const workflows = getWorkflows();
+        const schedules = getWorkflowSchedules();
+        if (!workflows.length) return 'No workflows saved.';
+        return workflows
+          .map((workflow) => {
+            const schedule = schedules.find((entry) => entry.workflow_id === workflow.id);
+            const scheduleBits = schedule
+              ? [
+                  schedule.enabled ? 'enabled' : 'paused',
+                  schedule.rrule,
+                  schedule.next_run_at ? `next ${schedule.next_run_at}` : '',
+                ].filter(Boolean).join(' | ')
+              : 'no schedule';
+            return `[${workflow.id}] ${workflow.title} - ${scheduleBits}\n${workflow.task_prompt}`;
+          })
+          .join('\n\n');
+      }
+
+      case 'save_workflow': {
+        const spec = parseWorkflowSaveSpec(action.target, action.value, action.reason);
+        const workflowId = saveWorkflow({
+          id: spec.id || undefined,
+          title: spec.title,
+          task_prompt: spec.taskPrompt,
+          notes: spec.notes,
+        });
+        if (spec.rrule) {
+          const existingSchedule = getWorkflowSchedules(workflowId)[0];
+          saveWorkflowSchedule({
+            id: existingSchedule?.id,
+            workflow_id: workflowId,
+            rrule: spec.rrule,
+            enabled: spec.enabled,
+            next_run_at: existingSchedule?.next_run_at,
+            last_run_at: existingSchedule?.last_run_at,
+          });
+        }
+        return `Saved workflow ${workflowId}${spec.rrule ? ` with schedule ${spec.rrule}` : ''}.`;
+      }
+
+      case 'delete_workflow': {
+        const workflowId = Number(action.target || action.value);
+        if (!Number.isFinite(workflowId)) return 'delete_workflow: missing workflow id.';
+        deleteWorkflow(workflowId);
+        return `Deleted workflow ${workflowId}.`;
+      }
+
+      case 'list_saved_credentials': {
+        const credentials = getSavedCredentials();
+        if (!credentials.length) return 'No saved credentials.';
+        return credentials
+          .map((entry) =>
+            `[${entry.id}] ${entry.domain} | ${entry.username || 'no username'} | password ${entry.has_password ? 'saved' : 'missing'}${entry.last_used_at ? ` | last used ${entry.last_used_at}` : ''}${entry.notes ? ` | ${entry.notes}` : ''}`,
+          )
+          .join('\n');
+      }
+
+      case 'save_saved_credential': {
+        const spec = parseCredentialSaveSpec(action.target, action.value, action.reason);
+        const saved = saveSavedCredential(spec);
+        return `Saved credential [${saved.id}] for ${saved.domain}${saved.username ? ` (${saved.username})` : ''}.`;
+      }
+
+      case 'delete_saved_credential': {
+        const credentialId = Number(action.target || action.value);
+        if (!Number.isFinite(credentialId)) return 'delete_saved_credential: missing credential id.';
+        deleteSavedCredential(credentialId);
+        return `Deleted saved credential ${credentialId}.`;
+      }
+
+      case 'list_autofill_profiles': {
+        const profiles = getAutofillProfiles();
+        if (!profiles.length) return 'No autofill profiles.';
+        return profiles
+          .map((profile) =>
+            `[${profile.id}] ${profile.label}${profile.full_name ? ` | ${profile.full_name}` : ''}${profile.email ? ` | ${profile.email}` : ''}${profile.phone ? ` | ${profile.phone}` : ''}`,
+          )
+          .join('\n');
+      }
+
+      case 'save_autofill_profile': {
+        const spec = parseAutofillProfileSaveSpec(action.target, action.value, action.reason);
+        const saved = saveAutofillProfile(spec);
+        return `Saved autofill profile [${saved.id}] ${saved.label}.`;
+      }
+
+      case 'delete_autofill_profile': {
+        const profileId = Number(action.target || action.value);
+        if (!Number.isFinite(profileId)) return 'delete_autofill_profile: missing profile id.';
+        deleteAutofillProfile(profileId);
+        return `Deleted autofill profile ${profileId}.`;
+      }
+
+      case 'discover_server_categories_or_actions': {
+        const request = parseIntegrationRequest(action.target, action.value);
+        const tools = await strata.discoverTools(request.appName || '');
+        if (!tools || !tools.length) {
+          return request.appName
+            ? `No integration tools found for ${request.appName}.`
+            : 'No integration tools found.';
+        }
+        return tools
+          .map((tool: any) => `${request.appName} :: ${tool.name} - ${tool.description || ''}`.trim())
+          .join('\n');
+      }
+
+      case 'execute_action': {
+        const request = parseIntegrationActionExecution(action.target, action.value, action.reason);
+        if (!request.appName || !request.action) {
+          return 'execute_action: expected appName and action.';
+        }
+        const result = await strata.executeAction(
+          request.appName,
+          request.action,
+          request.params || {},
+        );
+        return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      }
+
+      case 'search_documentation': {
+        const request = parseIntegrationRequest(action.target, action.value);
+        // Use discoverTools for all connected apps as documentation search
+        const allApps = strata.listAvailableApps();
+        const results: string[] = [];
+        const queryLower = (request.query || request.appName || '').toLowerCase();
+        
+        for (const appName of allApps) {
+          if (appName.toLowerCase().includes(queryLower)) {
+            results.push(`${appName} - Available app`);
+          }
+        }
+        
+        if (!results.length) return `No apps matched "${queryLower}".`;
+        return results.join('\n');
+      }
+
+      case 'suggest_schedule': {
+        const schedule = suggestSchedule(action.value || action.target || action.reason);
+        return JSON.stringify(schedule, null, 2);
       }
 
       case 'filesystem_read': {
@@ -804,6 +1530,12 @@ async function executeAction(
           : source.replace(editSpec.search, editSpec.replace);
         await fs.writeFile(filePath, next, 'utf-8');
         return `Edited ${filePath} (${editSpec.all ? 'all matches' : 'first match'}).`;
+      }
+
+      case 'filesystem_bash': {
+        const spec = parseFilesystemBashSpec(action.target, action.value, action.reason);
+        const result = await runWorkspaceShellCommand(spec.command, spec.cwd, spec.timeoutMs);
+        return formatShellResult(result.stdout, result.stderr);
       }
 
       case 'filesystem_ls': {
@@ -944,6 +1676,11 @@ async function resolveSelectorFromActionTarget(
 
   const byText = clickable.find((entry) => entry.text?.toLowerCase().includes(target.toLowerCase()));
   if (byText?.selector) return byText.selector;
+
+  if (preference === 'clickable' && target.length <= 80) {
+    const safeText = target.replace(/"/g, '\\"');
+    return `text="${safeText}"`;
+  }
 
   throw new Error(`could not resolve target "${target}" to a selector`);
 }
@@ -1101,7 +1838,16 @@ function parseConsoleLogOptions(rawValue: string): {
 
 function parseTaskInput(
   taskInput: string | AgentRunRequest,
-): { task: string; sessionId?: number; attachments: AgentAttachment[]; contextMessages: string[]; isChatMode: boolean } {
+): {
+  task: string;
+  sessionId?: number;
+  attachments: AgentAttachment[];
+  contextMessages: string[];
+  isChatMode: boolean;
+  workflowId?: number;
+  workflowRunId?: number;
+  workflowOrigin?: 'manual' | 'scheduled' | 'retry';
+} {
   if (typeof taskInput === 'string') {
     return { task: taskInput, attachments: [], contextMessages: [], isChatMode: false };
   }
@@ -1112,7 +1858,16 @@ function parseTaskInput(
     ? taskInput.contextMessages.map((m) => String(m || '').trim()).filter(Boolean).slice(-8)
     : [];
   const isChatMode = !!taskInput?.isChatMode;
-  return { task, sessionId, attachments, contextMessages, isChatMode };
+  return {
+    task,
+    sessionId,
+    attachments,
+    contextMessages,
+    isChatMode,
+    workflowId: Number(taskInput?.workflowId || 0) || undefined,
+    workflowRunId: Number(taskInput?.workflowRunId || 0) || undefined,
+    workflowOrigin: taskInput?.workflowOrigin || undefined,
+  };
 }
 
 function augmentTaskForRecruiting(
@@ -1623,6 +2378,667 @@ function toTableCell(value: string): string {
     .trim();
 }
 
+function shouldMarkSiteBlocked(result: string): boolean {
+  const text = String(result || '').toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('access denied') ||
+    text.includes('403') ||
+    text.includes('captcha') ||
+    text.includes('site blocked') ||
+    text.includes('forbidden') ||
+    text.includes('login required') ||
+    text.includes('unauthorized')
+  );
+}
+
+function parseBookmarkFolder(reason: string): string | undefined {
+  const text = String(reason || '').trim();
+  if (!text) return undefined;
+  const match = text.match(/folder\s*[:=]\s*([^\n,;]+)/i);
+  return match?.[1]?.trim();
+}
+
+function parseBookmarkUpdateSpec(raw: string): {
+  title?: string;
+  url?: string;
+  folder?: string;
+  position?: number;
+} {
+  const text = String(raw || '').trim();
+  if (!text) return {};
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      const out: Record<string, unknown> = {};
+      if ('title' in parsed) out.title = String((parsed as any).title || '');
+      if ('url' in parsed) out.url = String((parsed as any).url || '');
+      if ('folder' in parsed) out.folder = String((parsed as any).folder || '');
+      if ('position' in parsed && Number.isFinite(Number((parsed as any).position))) {
+        out.position = Number((parsed as any).position);
+      }
+      return out;
+    }
+  } catch {
+    // Fall back to key=value parsing.
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const segment of text.split(/[,\n]/)) {
+    const [rawKey, ...rest] = segment.split('=');
+    if (!rawKey || rest.length === 0) continue;
+    const key = rawKey.trim().toLowerCase();
+    const value = rest.join('=').trim();
+    if (!value) continue;
+    if (key === 'title' || key === 'url' || key === 'folder') out[key] = value;
+    if (key === 'position' && Number.isFinite(Number(value))) out.position = Number(value);
+  }
+  return out;
+}
+
+function parseHistoryDeleteRange(raw: string): { start?: string; end?: string } {
+  const text = String(raw || '').trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        start: (parsed as any).start ? String((parsed as any).start) : undefined,
+        end: (parsed as any).end ? String((parsed as any).end) : undefined,
+      };
+    }
+  } catch {
+    // Fall back to a simple "start|end" format.
+  }
+
+  const [start, end] = text.split('|').map((part) => part.trim());
+  return {
+    start: start || undefined,
+    end: end || undefined,
+  };
+}
+
+function parsePointSpec(raw: string): { x: number; y: number } | null {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const match = text.match(/(-?\d+(?:\.\d+)?)\s*[,x]\s*(-?\d+(?:\.\d+)?)/i);
+  if (!match) return null;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function parsePathList(raw: string): string[] {
+  return String(raw || '')
+    .split(/[\n,;]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+async function loadUploadFilePayloads(raw: string): Promise<Array<{ path: string; name: string; mimeType: string; data: string }>> {
+  const text = String(raw || '').trim();
+  if (!text) throw new Error('upload_file: missing file path.');
+
+  let requestedPaths = parsePathList(text);
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      requestedPaths = parsed.map((entry) => String(entry || '').trim()).filter(Boolean);
+    } else if (parsed && typeof parsed === 'object') {
+      const paths = Array.isArray((parsed as any).paths)
+        ? (parsed as any).paths.map((entry: unknown) => String(entry || '').trim()).filter(Boolean)
+        : [];
+      requestedPaths = paths.length ? paths : parsePathList(String((parsed as any).path || ''));
+    }
+  } catch {
+    // Plain path list.
+  }
+
+  if (!requestedPaths.length) throw new Error('upload_file: no file paths provided.');
+
+  const out: Array<{ path: string; name: string; mimeType: string; data: string }> = [];
+  let totalBytes = 0;
+  for (const rawPath of requestedPaths.slice(0, 3)) {
+    const resolved = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(process.cwd(), rawPath);
+    const stat = await fs.stat(resolved);
+    if (!stat.isFile()) throw new Error(`upload_file: not a file: ${resolved}`);
+    if (stat.size > 8 * 1024 * 1024) throw new Error(`upload_file: file too large (>8MB): ${resolved}`);
+    totalBytes += stat.size;
+    if (totalBytes > 12 * 1024 * 1024) throw new Error('upload_file: combined upload payload too large (>12MB).');
+    const bytes = await fs.readFile(resolved);
+    out.push({
+      path: resolved,
+      name: path.basename(resolved),
+      mimeType: inferMimeType(resolved),
+      data: bytes.toString('base64'),
+    });
+  }
+  return out;
+}
+
+function inferMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const map: Record<string, string> = {
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.zip': 'application/zip',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function parseTabIdList(raw: string): string[] {
+  return String(raw || '')
+    .split(/[\s,\n]+/)
+    .map((part) => part.trim())
+    .filter((part) => !!part);
+}
+
+function parseFilesystemBashSpec(target: string, value: string, reason: string): {
+  command: string;
+  cwd?: string;
+  timeoutMs: number;
+} {
+  const rawTarget = String(target || '').trim();
+  const rawValue = String(value || '').trim();
+  const primary = String(rawValue || rawTarget || '').trim();
+  if (!primary) throw new Error('filesystem_bash: missing command.');
+
+  const fallbackTimeout = 30000;
+  const fallbackCwd = rawTarget && rawValue ? rawTarget : undefined;
+
+  try {
+    const parsed = JSON.parse(primary);
+    if (parsed && typeof parsed === 'object') {
+      const command = String((parsed as any).command || '').trim();
+      if (!command) throw new Error('filesystem_bash JSON requires "command".');
+      const cwd = (parsed as any).cwd ? String((parsed as any).cwd).trim() : fallbackCwd;
+      const timeoutMsRaw = Number((parsed as any).timeoutMs || (parsed as any).timeout || fallbackTimeout);
+      return {
+        command,
+        cwd,
+        timeoutMs: Number.isFinite(timeoutMsRaw) ? Math.max(1000, Math.min(120000, timeoutMsRaw)) : fallbackTimeout,
+      };
+    }
+  } catch {
+    // Plain command string.
+  }
+
+  return {
+    command: primary,
+    cwd: fallbackCwd,
+    timeoutMs: fallbackTimeout,
+  };
+}
+
+function parseWorkflowSaveSpec(target: string, value: string, reason: string): {
+  id?: number;
+  title: string;
+  taskPrompt: string;
+  notes?: string;
+  rrule?: string;
+  enabled?: boolean;
+} {
+  const raw = String(value || '').trim();
+  const fallbackTitle = String(target || '').trim();
+  const fallbackNotes = String(reason || '').trim();
+  if (!raw) {
+    return {
+      title: fallbackTitle || 'Untitled Workflow',
+      taskPrompt: fallbackNotes || fallbackTitle || 'Continue the saved browser workflow.',
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      id: Number((parsed as any)?.id || 0) || undefined,
+      title: String((parsed as any)?.title || fallbackTitle || 'Untitled Workflow').trim(),
+      taskPrompt: String((parsed as any)?.task_prompt || (parsed as any)?.taskPrompt || '').trim() || fallbackNotes || fallbackTitle,
+      notes: String((parsed as any)?.notes || fallbackNotes || '').trim() || undefined,
+      rrule: String((parsed as any)?.rrule || '').trim() || undefined,
+      enabled: typeof (parsed as any)?.enabled === 'boolean' ? !!(parsed as any).enabled : true,
+    };
+  } catch {
+    return {
+      title: fallbackTitle || 'Untitled Workflow',
+      taskPrompt: raw,
+      notes: fallbackNotes || undefined,
+    };
+  }
+}
+
+function parseCredentialSaveSpec(
+  target: string,
+  value: string,
+  reason: string,
+): { id?: number; domain: string; username?: string; password?: string; notes?: string } {
+  const domainFallback = String(target || '').trim();
+  const valueText = String(value || '').trim();
+  const notesFallback = String(reason || '').trim();
+  try {
+    const parsed = JSON.parse(valueText || '{}');
+    const domain = String((parsed as any)?.domain || domainFallback).trim();
+    if (!domain) throw new Error('missing domain');
+    return {
+      id: Number((parsed as any)?.id || 0) || undefined,
+      domain,
+      username: String((parsed as any)?.username || '').trim() || undefined,
+      password: Object.prototype.hasOwnProperty.call(parsed || {}, 'password')
+        ? String((parsed as any)?.password || '')
+        : undefined,
+      notes: String((parsed as any)?.notes || notesFallback || '').trim() || undefined,
+    };
+  } catch {
+    const [username, password, ...noteParts] = valueText.split('|').map((entry) => entry.trim());
+    if (!domainFallback) {
+      throw new Error('save_saved_credential expects target=domain and value=username|password|notes, or JSON.');
+    }
+    return {
+      domain: domainFallback,
+      username: username || undefined,
+      password: password || undefined,
+      notes: noteParts.join(' | ') || notesFallback || undefined,
+    };
+  }
+}
+
+function parseAutofillProfileSaveSpec(
+  target: string,
+  value: string,
+  reason: string,
+): {
+  id?: number;
+  label: string;
+  full_name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+} {
+  const fallbackLabel = String(target || '').trim() || 'Default';
+  const raw = String(value || '').trim();
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    return {
+      id: Number((parsed as any)?.id || 0) || undefined,
+      label: String((parsed as any)?.label || fallbackLabel).trim() || 'Default',
+      full_name: String((parsed as any)?.full_name || (parsed as any)?.fullName || '').trim() || undefined,
+      email: String((parsed as any)?.email || '').trim() || undefined,
+      phone: String((parsed as any)?.phone || '').trim() || undefined,
+      company: String((parsed as any)?.company || '').trim() || undefined,
+      address_line1: String((parsed as any)?.address_line1 || '').trim() || undefined,
+      address_line2: String((parsed as any)?.address_line2 || '').trim() || undefined,
+      city: String((parsed as any)?.city || '').trim() || undefined,
+      state: String((parsed as any)?.state || '').trim() || undefined,
+      postal_code: String((parsed as any)?.postal_code || '').trim() || undefined,
+      country: String((parsed as any)?.country || '').trim() || undefined,
+    };
+  } catch {
+    return {
+      label: fallbackLabel,
+      full_name: raw || String(reason || '').trim() || undefined,
+    };
+  }
+}
+
+function parseIntegrationRequest(target: string, value: string): { appName?: string; query?: string } {
+  const rawTarget = String(target || '').trim();
+  const rawValue = String(value || '').trim();
+  const merged = rawValue || rawTarget;
+  if (!merged) return {};
+
+  try {
+    const parsed = JSON.parse(merged);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        appName: (parsed as any).appName ? String((parsed as any).appName).trim() : undefined,
+        query: (parsed as any).query ? String((parsed as any).query).trim() : undefined,
+      };
+    }
+  } catch {
+    // Plain text.
+  }
+
+  if (rawTarget && rawValue) return { appName: rawTarget, query: rawValue };
+  return { query: merged };
+}
+
+function parseIntegrationActionExecution(target: string, value: string, reason: string): {
+  appName?: string;
+  category?: string;
+  action?: string;
+  params: Record<string, unknown>;
+} {
+  const raw = String(value || '').trim() || String(target || '').trim();
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        appName: (parsed as any).appName ? String((parsed as any).appName).trim() : undefined,
+        category: (parsed as any).category ? String((parsed as any).category).trim() : undefined,
+        action: (parsed as any).action ? String((parsed as any).action).trim() : undefined,
+        params: (parsed as any).params && typeof (parsed as any).params === 'object'
+          ? { ...(parsed as any).params }
+          : {},
+      };
+    }
+  } catch {
+    // Fall back to delimited text.
+  }
+
+  const appName = String(target || '').trim() || undefined;
+  const [category, actionName] = String(value || '').split('/').map((part) => part.trim());
+  return {
+    appName,
+    category: category || 'connection',
+    action: actionName || category || undefined,
+    params: reason ? { note: reason } : {},
+  };
+}
+
+function parseColorHint(raw: string): string | undefined {
+  const text = String(raw || '').trim();
+  if (!text) return undefined;
+  const match = text.match(/color\s*[:=]\s*([a-z0-9#_-]+)/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+async function runWorkspaceShellCommand(
+  command: string,
+  cwdHint?: string,
+  timeoutMs = 30000,
+): Promise<{ stdout: string; stderr: string }> {
+  const cwd = cwdHint ? resolveWorkspacePath(cwdHint) : resolveWorkspacePath('.');
+  const { stdout, stderr } = await execAsync(`powershell -NoProfile -Command ${JSON.stringify(command)}`, {
+    cwd,
+    timeout: Math.max(1000, Math.min(120000, timeoutMs)),
+    maxBuffer: 1024 * 1024 * 4,
+    windowsHide: true,
+  });
+  return {
+    stdout: String(stdout || ''),
+    stderr: String(stderr || ''),
+  };
+}
+
+function formatShellResult(stdout: string, stderr: string): string {
+  const parts: string[] = [];
+  const out = String(stdout || '').trim();
+  const err = String(stderr || '').trim();
+  if (out) parts.push(out.slice(0, 20000));
+  if (err) parts.push(`STDERR:\n${err.slice(0, 12000)}`);
+  return parts.join('\n\n') || 'Command completed with no output.';
+}
+
+function suggestSchedule(raw: string): {
+  summary: string;
+  cadence: string;
+  time?: string;
+  weekdays?: string[];
+  interval?: number;
+} {
+  const text = String(raw || '').trim().toLowerCase();
+  if (!text) {
+    return { summary: 'Run daily at 09:00 local time.', cadence: 'daily', time: '09:00' };
+  }
+
+  const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+  let time = '09:00';
+  if (timeMatch) {
+    let hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2] || '0');
+    const meridiem = String(timeMatch[3] || '').toLowerCase();
+    if (meridiem === 'pm' && hours < 12) hours += 12;
+    if (meridiem === 'am' && hours === 12) hours = 0;
+    time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  }
+
+  if (/weekday|weekdays|every workday/.test(text)) {
+    return {
+      summary: `Run every weekday at ${time} local time.`,
+      cadence: 'weekly',
+      weekdays: ['MO', 'TU', 'WE', 'TH', 'FR'],
+      time,
+    };
+  }
+
+  const hourly = text.match(/every\s+(\d+)\s+hour/);
+  if (hourly) {
+    const interval = Math.max(1, Number(hourly[1]));
+    return {
+      summary: `Run every ${interval} hour${interval === 1 ? '' : 's'}.`,
+      cadence: 'hourly',
+      interval,
+    };
+  }
+
+  const daily = text.match(/every\s+(\d+)\s+day/);
+  if (daily) {
+    const interval = Math.max(1, Number(daily[1]));
+    return {
+      summary: `Run every ${interval} day${interval === 1 ? '' : 's'} at ${time} local time.`,
+      cadence: 'daily',
+      interval,
+      time,
+    };
+  }
+
+  if (/weekly|every week/.test(text)) {
+    return {
+      summary: `Run weekly at ${time} local time.`,
+      cadence: 'weekly',
+      weekdays: ['MO'],
+      time,
+    };
+  }
+
+  return {
+    summary: `Run daily at ${time} local time.`,
+    cadence: 'daily',
+    time,
+  };
+}
+
+function parseTabGroupSpec(raw: string): {
+  id?: string;
+  title?: string;
+  color?: string;
+  tabIds: string[];
+} {
+  const text = String(raw || '').trim();
+  if (!text) return { tabIds: [] };
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      const tabIds = Array.isArray((parsed as any).tabIds)
+        ? (parsed as any).tabIds.map((entry: unknown) => String(entry || '').trim()).filter(Boolean)
+        : [];
+      return {
+        id: (parsed as any).id ? String((parsed as any).id).trim() : undefined,
+        title: (parsed as any).title ? String((parsed as any).title).trim() : undefined,
+        color: (parsed as any).color ? String((parsed as any).color).trim() : undefined,
+        tabIds,
+      };
+    }
+  } catch {
+    // Fall back to key=value parsing.
+  }
+
+  const out: { id?: string; title?: string; color?: string; tabIds: string[] } = { tabIds: [] };
+  for (const segment of text.split(/[\n;]/)) {
+    const [rawKey, ...rest] = segment.split('=');
+    if (!rawKey || rest.length === 0) continue;
+    const key = rawKey.trim().toLowerCase();
+    const value = rest.join('=').trim();
+    if (!value) continue;
+    if (key === 'id') out.id = value;
+    if (key === 'title' || key === 'name') out.title = value;
+    if (key === 'color') out.color = value;
+    if (key === 'tabs' || key === 'tabids' || key === 'tab_ids') out.tabIds = parseTabIdList(value);
+  }
+  return out;
+}
+
+function parseArtifactHint(raw: string): { filename?: string } {
+  const text = String(raw || '').trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        filename: (parsed as any).filename
+          ? String((parsed as any).filename).trim()
+          : (parsed as any).path
+            ? path.basename(String((parsed as any).path))
+            : undefined,
+      };
+    }
+  } catch {
+    // Fall back to plain text.
+  }
+  return { filename: text };
+}
+
+function parseDownloadRequest(target: string, value: string, reason: string): { url?: string; filename?: string } {
+  const parts = [String(target || '').trim(), String(value || '').trim(), String(reason || '').trim()].filter(Boolean);
+  for (const part of parts) {
+    try {
+      const parsed = JSON.parse(part);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          url: (parsed as any).url ? String((parsed as any).url).trim() : undefined,
+          filename: (parsed as any).filename ? String((parsed as any).filename).trim() : undefined,
+        };
+      }
+    } catch {
+      if (/^https?:\/\//i.test(part)) {
+        return { url: part };
+      }
+    }
+  }
+  const hint = parseArtifactHint(value || reason);
+  return {
+    url: /^https?:\/\//i.test(String(target || '').trim()) ? String(target).trim() : undefined,
+    filename: hint.filename,
+  };
+}
+
+function sanitizeArtifactStem(raw: string, fallback: string): string {
+  const source = String(raw || '').trim() || fallback;
+  const cleaned = source
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+async function getAgentArtifactsDir(): Promise<string> {
+  const dir = path.join(app.getPath('downloads'), 'Bron');
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
+}
+
+async function writeAgentArtifactBuffer(
+  rawData: string,
+  extension: string,
+  hint: { filename?: string },
+  fallbackStem: string,
+): Promise<string> {
+  const dir = await getAgentArtifactsDir();
+  const ext = extension.startsWith('.') ? extension : `.${extension}`;
+  const preferredName = hint.filename ? path.basename(hint.filename) : '';
+  const stem = sanitizeArtifactStem(preferredName ? preferredName.replace(/\.[^.]+$/, '') : fallbackStem, 'artifact');
+  const fileName = preferredName
+    ? (preferredName.toLowerCase().endsWith(ext.toLowerCase()) ? preferredName : `${preferredName}${ext}`)
+    : `${stem}_${Date.now()}${ext}`;
+
+  const base64 = rawData.startsWith('data:')
+    ? rawData.slice(rawData.indexOf(',') + 1)
+    : rawData;
+  const filePath = path.join(dir, fileName);
+  await fs.writeFile(filePath, Buffer.from(base64, 'base64'));
+  return filePath;
+}
+
+async function downloadUrlWithWindowSession(
+  getWindow: (() => BrowserWindow | null) | undefined,
+  url: string,
+  filenameHint?: string,
+): Promise<string> {
+  const win = getWindow?.();
+  if (!win || win.isDestroyed()) {
+    throw new Error('download_file failed: browser window unavailable.');
+  }
+
+  const dir = await getAgentArtifactsDir();
+  const session = win.webContents.session;
+  const hintedName = filenameHint ? path.basename(filenameHint) : '';
+
+  return await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`download_file timed out for ${url}`));
+    }, 45000);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      session.removeListener('will-download', onWillDownload);
+    };
+
+    const onWillDownload = (_event: any, item: any) => {
+      let urlBase = '';
+      try {
+        urlBase = path.basename(new URL(url).pathname);
+      } catch {
+        urlBase = '';
+      }
+      const candidate = hintedName || String(item?.getFilename?.() || '').trim() || urlBase || 'download.bin';
+      const ext = path.extname(candidate || '') || '.bin';
+      const fileName = `${sanitizeArtifactStem(candidate.replace(/\.[^.]+$/, ''), 'download')}${ext}`;
+      const savePath = path.join(dir, fileName);
+      item.setSavePath(savePath);
+      item.once('done', (_doneEvent: any, state: string) => {
+        cleanup();
+        if (state === 'completed') {
+          resolve(savePath);
+          return;
+        }
+        reject(new Error(`download_file failed: ${state}`));
+      });
+    };
+
+    session.on('will-download', onWillDownload);
+    try {
+      session.downloadURL(url);
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
+  });
+}
+
 function normalizeMemoryKey(raw: string): string {
   const cleaned = String(raw || '')
     .trim()
@@ -1674,13 +3090,22 @@ function getActionEmoji(action: string): string {
     open_url: '[OPEN]',
     search: '[SEARCH]',
     click: '[CLICK]',
+    click_at: '[CLICK@]',
     fill: '[FILL]',
     clear: '[CLEAR]',
+    check: '[CHECK]',
+    uncheck: '[UNCHECK]',
     select_option: '[SELECT]',
+    upload_file: '[UPLOAD]',
     type: '[TYPE]',
     press_key: '[KEY]',
     press_enter: '[ENTER]',
+    focus: '[FOCUS]',
+    hover: '[HOVER]',
+    hover_at: '[HOVER@]',
     scroll: '[SCROLL]',
+    drag: '[DRAG]',
+    drag_at: '[DRAG@]',
     extract: '[EXTRACT]',
     summarize: '[SUMMARIZE]',
     new_page: '[PAGE+]',
@@ -1693,9 +3118,31 @@ function getActionEmoji(action: string): string {
     filesystem_read: '[FS-R]',
     filesystem_write: '[FS-W]',
     filesystem_edit: '[FS-E]',
+    filesystem_bash: '[FS-SH]',
     filesystem_grep: '[FS-G]',
     filesystem_find: '[FS-F]',
     filesystem_ls: '[FS-LS]',
+    list_tab_groups: '[GROUPS]',
+    group_tabs: '[GROUP+]',
+    update_tab_group: '[GROUP~]',
+    ungroup_tabs: '[GROUP-]',
+    close_tab_group: '[GROUPX]',
+    save_pdf: '[PDF]',
+    save_screenshot: '[SAVE-SHOT]',
+    download_file: '[DL]',
+    list_workflows: '[WF]',
+    save_workflow: '[WF+]',
+    delete_workflow: '[WF-]',
+    list_saved_credentials: '[AUTH]',
+    save_saved_credential: '[AUTH+]',
+    delete_saved_credential: '[AUTH-]',
+    list_autofill_profiles: '[FORMS]',
+    save_autofill_profile: '[FORMS+]',
+    delete_autofill_profile: '[FORMS-]',
+    discover_server_categories_or_actions: '[DISCOVER]',
+    execute_action: '[INTEGRATION]',
+    search_documentation: '[DOCS?]',
+    suggest_schedule: '[SCHEDULE]',
     memory_search: '[MEM?]',
     memory_write: '[MEM+]',
     memory_read_core: '[CORE]',
@@ -1727,13 +3174,45 @@ function applyExecutionHeuristics(
   }
   const attemptsOnSameState = stateActionCounts.get(stateActionKey) || 0;
   stateActionCounts.set(stateActionKey, attemptsOnSameState + 1);
-  if (attemptsOnSameState >= 2) {
+  
+  // Allow more attempts for form interactions (filling forms requires multiple fields)
+  // and for SPAs where URL doesn't change but UI does
+  const isFormAction = ['fill', 'type', 'clear', 'click', 'press_key', 'press_enter'].includes(action.action);
+  const maxAttempts = (action.action === 'press_key' || action.action === 'press_enter') ? 35 : (isFormAction ? 8 : 5);
+  
+  if (attemptsOnSameState >= maxAttempts) {
     return {
       action,
-      blockReason: `Action "${action.action}" is BLOCKED because the page did not change after previous attempts. You MUST try a different action (like clicking the Search button instead of pressing Enter, or scrolling to see more results).`,
+      blockReason: `Action "${action.action}" blocked after ${maxAttempts} attempts on same page state. Try a completely different approach or extract data with evaluate_script.`,
     };
   }
 
+  const visibleText = String(state?.visibleText || '').toLowerCase();
+  const authChallengeDetected = /otp|verification code|security code|2-step|two-factor|two step|one-time password/.test(visibleText);
+  const accountChooserDetected = /choose an account|select an account|use another account|continue as/.test(visibleText);
+
+  if (authChallengeDetected) {
+    if ((action.action === 'fill' || action.action === 'type') && /password/i.test(action.value || '')) {
+      return {
+        action,
+        blockReason: 'Verification code step detected. Do not type a password into this challenge screen.',
+      };
+    }
+    if ((action.action === 'click' || action.action === 'press_enter') && attemptsOnSameState >= 2) {
+      return {
+        action,
+        blockReason: 'Verification flow appears unchanged. Wait for a new code, different field, or visible state change before retrying.',
+      };
+    }
+  }
+
+  if (accountChooserDetected && action.action === 'fill' && /email|user|login/i.test(action.target || '')) {
+    return {
+      action,
+      blockReason: 'Account chooser detected. Select a visible account option or "Use another account" instead of typing into the old field again.',
+    };
+  }
+  
   const linkedin = isLinkedInUrl(state?.url);
   if (!linkedin) {
     linkedInFlow.consecutiveScrolls = 0;
@@ -1878,4 +3357,65 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Synthesizes a final report if the model provided an empty or generic "done" message.
+ */
+async function synthesizeFinalAnswerFromContext(
+  apiKey: string,
+  task: string,
+  history: ChatTurn[],
+  memories: Array<{ key: string; value: string }>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const model = 'openai/gpt-4o';
+  const systemPrompt = `You are Bron's Research Summarizer.
+Your goal is to compile a professional, detailed markdown report based on a research task and the data gathered so far.
+
+RULES:
+1. Provide a comprehensive answer to the original task.
+2. Use markdown tables, bold text, and lists to make it readable.
+3. Include specific names, prices, links, or counts found in the history/memories.
+4. If multiple sites were visited, summarize findings from each.
+5. If the data is incomplete, state what was found and what is missing.
+6. Return ONLY the markdown report. No introductory filler.`;
+
+  const memoryContext = memories.length > 0 
+    ? `RELEVANT FINDINGS:\n${memories.map(m => `- ${m.key}: ${m.value.slice(0, 500)}`).join('\n')}`
+    : 'No specific findings in memory.';
+
+  const historyContext = history.length > 0
+    ? `CONVERSATION LOG (Partial):\n${history.slice(-15).map(h => `[${h.role}] ${h.content.slice(0, 1000)}`).join('\n')}`
+    : 'No conversation history.';
+
+  const userMessage = `TASK: ${task}\n\n${memoryContext}\n\n${historyContext}\n\nPlease synthesize a final report.`;
+
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost',
+        'X-Title': 'Bron Synthesis',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.2,
+      }),
+      signal,
+    });
+
+    if (!res.ok) throw new Error(`Synthesis API error: ${res.status}`);
+    const data = await res.json();
+    return (data?.choices?.[0]?.message?.content || 'Task completed (synthesis failed).').trim();
+  } catch (err) {
+    console.error('Synthesis API call failed:', err);
+    return 'Task completed.';
+  }
 }

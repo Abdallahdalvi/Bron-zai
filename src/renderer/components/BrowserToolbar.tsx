@@ -11,11 +11,13 @@ import {
   Search,
   Zap,
   X,
+  Star,
   ZoomIn,
   ZoomOut,
   Home,
   User,
-  MoreHorizontal
+  MoreHorizontal,
+  Pin
 } from 'lucide-react';
 import type { TabInfo, Settings as SettingsType } from '../../shared/types';
 import ProfileMenu from './ProfileMenu';
@@ -42,6 +44,11 @@ interface Props {
   currentProfile: string;
   onSwitchProfile: (name: string) => void;
   onOpenHistory: () => void;
+  onOpenBookmarks: () => void;
+  onOpenWorkflows: () => void;
+  onToggleBookmark: () => void;
+  onTogglePinCurrentTab: () => void;
+  isBookmarked: boolean;
   currentTheme: 'light' | 'dark' | 'medium';
   onSwitchTheme: (theme: 'light' | 'dark' | 'medium') => void;
   onAbout: () => void;
@@ -68,6 +75,11 @@ const BrowserToolbar: React.FC<Props> = ({
   currentProfile,
   onSwitchProfile,
   onOpenHistory,
+  onOpenBookmarks,
+  onOpenWorkflows,
+  onToggleBookmark,
+  onTogglePinCurrentTab,
+  isBookmarked,
   currentTheme,
   onSwitchTheme,
   onAbout,
@@ -76,6 +88,7 @@ const BrowserToolbar: React.FC<Props> = ({
   const [isFocused, setIsFocused] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const activeTab = tabs.find((tab) => tab.active) || tabs[0];
 
   useEffect(() => {
     if (!isFocused) setInputValue(url);
@@ -115,6 +128,20 @@ const BrowserToolbar: React.FC<Props> = ({
         </button>
         <button onClick={() => onNavigate('https://www.google.com')} className={btnClass} title="Home">
           <Home className="w-4 h-4" />
+        </button>
+        <button
+          onClick={onTogglePinCurrentTab}
+          className={`${btnClass} ${activeTab?.pinned ? 'text-bron-accent' : ''}`}
+          title={activeTab?.pinned ? 'Unpin tab' : 'Pin tab'}
+        >
+          <Pin className={`w-4 h-4 ${activeTab?.pinned ? 'fill-current' : ''}`} />
+        </button>
+        <button
+          onClick={onToggleBookmark}
+          className={`${btnClass} ${isBookmarked ? 'text-amber-400' : ''}`}
+          title={isBookmarked ? 'Remove bookmark' : 'Save bookmark'}
+        >
+          <Star className={`w-4 h-4 ${isBookmarked ? 'fill-current' : ''}`} />
         </button>
       </div>
 
@@ -169,6 +196,7 @@ const BrowserToolbar: React.FC<Props> = ({
               `}
             >
               <Globe className={`w-2.5 h-2.5 flex-shrink-0 transition-colors ${tab.active ? 'text-bron-accent' : 'text-bron-text-muted'}`} />
+              {tab.pinned ? <Pin className="w-2.5 h-2.5 text-bron-accent flex-shrink-0" /> : null}
               <span className={`text-[10px] font-bold truncate flex-1 ${tab.active ? '' : 'opacity-60'}`}>
                 {tab.title || 'New Tab'}
               </span>
@@ -263,6 +291,8 @@ const BrowserToolbar: React.FC<Props> = ({
             onNewWindow={() => window.bronAPI.newWindow()}
             onNewIncognitoWindow={() => window.bronAPI.newIncognitoWindow()}
             onOpenHistory={onOpenHistory}
+            onOpenBookmarks={onOpenBookmarks}
+            onOpenWorkflows={onOpenWorkflows}
             onOpenDownloads={() => window.bronAPI.openDownloads()}
             currentTheme={currentTheme}
             onSwitchTheme={onSwitchTheme}

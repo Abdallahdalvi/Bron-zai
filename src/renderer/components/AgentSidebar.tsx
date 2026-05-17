@@ -28,7 +28,33 @@ interface Props {
   setAgentRunning: (running: boolean) => void;
   onOpenMemory: () => void;
   onOpenHistory: () => void;
+  onOpenWorkflows: () => void;
   onRefresh: () => void;
+  screenshot?: string | null;
+}
+
+const EXPORT_MOJIBAKE_FIXES: Array<[RegExp, string]> = [
+  [/â‚¹/g, '₹'],
+  [/â€“/g, '–'],
+  [/â€”/g, '—'],
+  [/â€˜/g, '‘'],
+  [/â€™/g, '’'],
+  [/â€œ/g, '“'],
+  [/â€\u009d/g, '”'],
+  [/â€¦/g, '…'],
+  [/â€¢/g, '•'],
+  [/â†’/g, '→'],
+  [/Â·/g, '·'],
+  [/Â /g, ' '],
+  [/Â/g, ''],
+];
+
+function normalizeExportText(text: string): string {
+  let normalized = text.normalize('NFC');
+  for (const [pattern, replacement] of EXPORT_MOJIBAKE_FIXES) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized;
 }
 
 const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
@@ -50,12 +76,7 @@ const MarkdownText: React.FC<{ text: string }> = ({ text }) => {
               href={linkMatch[2]} 
               onClick={(e) => {
                 e.preventDefault();
-                const bridge = (window as any).__bronBridgeExecute;
-                if (typeof bridge === 'function') {
-                  bridge({ method: 'navigate', payload: { url: linkMatch[2] } }).catch(() => {});
-                  return;
-                }
-                window.bronAPI?.navigate(linkMatch[2]);
+                window.bronAPI?.navigate(linkMatch[2]).catch(() => {});
               }}
               className="text-bron-accent hover:opacity-80 underline decoration-bron-accent/40 cursor-pointer font-semibold"
             >
@@ -217,7 +238,9 @@ const AgentSidebar: React.FC<Props> = ({
   setAgentRunning,
   onOpenMemory,
   onOpenHistory,
+  onOpenWorkflows,
   onRefresh,
+  screenshot,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -226,6 +249,8 @@ const AgentSidebar: React.FC<Props> = ({
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
   const [usage, setUsage] = useState<string | null>(null);
   const [creditHistory, setCreditHistory] = useState<CreditUsageRecord[]>([]);
+  const [lastCompletedTask, setLastCompletedTask] = useState<string>('');
+  const [lastCompletedResult, setLastCompletedResult] = useState<string>('');
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -302,6 +327,40 @@ const AgentSidebar: React.FC<Props> = ({
     });
   }, []);
 
+  const inferWorkflowRRule = useCallback((task: string) => {
+    const text = String(task || '').toLowerCase();
+    if (/every\s+\d+\s+hour/.test(text)) {
+      const match = text.match(/every\s+(\d+)\s+hour/);
+      const interval = Math.max(1, Number(match?.[1] || 1));
+      return `FREQ=HOURLY;INTERVAL=${interval};BYMINUTE=0`;
+    }
+    if (/weekday|every workday|every weekday/.test(text)) {
+      return 'FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0';
+    }
+    if (/daily|every day|every morning/.test(text)) {
+      return 'FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=0';
+    }
+    return '';
+  }, []);
+
+  const saveLastTaskAsWorkflow = useCallback(async (withSchedule: boolean) => {
+    if (!window.bronAPI || !lastCompletedTask.trim()) return;
+    const workflowId = await window.bronAPI.saveWorkflow({
+      title: lastCompletedTask.trim().slice(0, 80),
+      task_prompt: lastCompletedTask.trim(),
+      notes: 'Saved from agent result',
+    });
+    const inferred = inferWorkflowRRule(lastCompletedTask);
+    if (withSchedule && inferred) {
+      await window.bronAPI.saveWorkflowSchedule({
+        workflow_id: workflowId,
+        rrule: inferred,
+        enabled: true,
+      });
+    }
+    onOpenWorkflows();
+  }, [inferWorkflowRRule, lastCompletedTask, onOpenWorkflows]);
+
   const saveSession = useCallback(async (msgs: ChatMessage[]) => {
     if (!window.bronAPI?.saveChatSession) return;
     const userMsgs = msgs.filter(m => m.role === 'user');
@@ -362,6 +421,11 @@ const AgentSidebar: React.FC<Props> = ({
           content: doneMessage,
           timestamp: Date.now()
         });
+        const lastUser = [...messagesRef.current].reverse().find((msg) => msg.role === 'user');
+        if (lastUser?.content) {
+          setLastCompletedTask(lastUser.content);
+          setLastCompletedResult(doneMessage);
+        }
         setAgentRunning(false);
         onRefresh();
         fetchUsage();
@@ -497,6 +561,27 @@ const AgentSidebar: React.FC<Props> = ({
         </div>
       )}
 
+      {/* Screenshot Preview - Shows what the agent is seeing */}
+      {screenshot && (
+        <div className="mx-4 mt-3 p-2 bg-bron-surface rounded-xl border border-bron-border/50">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-bold text-bron-text-dim uppercase tracking-wider">Agent View</span>
+            <div className="flex items-center gap-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-[10px] text-green-500 font-medium">Live</span>
+            </div>
+          </div>
+          <div className="relative rounded-lg overflow-hidden border border-bron-border/30">
+            <img 
+              src={screenshot} 
+              alt="Current page" 
+              className="w-full h-auto object-contain bg-bron-bg/50"
+              style={{ maxHeight: '200px' }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar no-scrollbar">
         {messages.length === 0 && (
@@ -570,9 +655,10 @@ const AgentSidebar: React.FC<Props> = ({
                         {/* PDF/Print */}
                         <button 
                           onClick={() => {
+                            const exportContent = normalizeExportText(msg.content);
                             let inTable = false;
                             let tableRowIdx = 0;
-                            const htmlContent = msg.content
+                            const htmlContent = exportContent
                               .split('\n')
                               .map(line => {
                                 const t = line.trim();
@@ -613,6 +699,8 @@ const AgentSidebar: React.FC<Props> = ({
                               <html>
                                 <head>
                                   <title>Bron Research Report</title>
+                                  <meta charset="utf-8" />
+                                  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
                                   <style>
                                     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 50px; line-height: 1.6; color: #334155; max-width: 900px; margin: 0 auto; }
                                     .header { border-bottom: 4px solid #3b82f6; margin-bottom: 40px; padding-bottom: 20px; }
@@ -648,9 +736,10 @@ const AgentSidebar: React.FC<Props> = ({
                         {/* Word Export */}
                         <button 
                           onClick={() => {
+                            const exportContent = normalizeExportText(msg.content);
                             let inTable = false;
                             let tableRowIdx = 0;
-                            const htmlContent = msg.content
+                            const htmlContent = exportContent
                               .split('\n')
                               .map(line => {
                                 const t = line.trim();
@@ -762,6 +851,51 @@ const AgentSidebar: React.FC<Props> = ({
 
       {/* Input Area */}
       <div className="p-4 bg-transparent sticky bottom-0">
+        {lastCompletedTask && (
+          <div className="mb-3 p-3 rounded-2xl bg-bron-accent/10 border border-bron-accent/20 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-bron-accent">Workflow Suggestion</div>
+                <div className="text-[12px] text-bron-text mt-1 line-clamp-2 font-semibold">{lastCompletedTask}</div>
+                <div className="text-[10px] text-bron-text-dim mt-1">
+                  Turn this completed task into a reusable browser workflow.
+                </div>
+              </div>
+              <button
+                onClick={() => setLastCompletedTask('')}
+                className="p-1.5 rounded-lg text-bron-text-dim hover:text-bron-text"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => saveLastTaskAsWorkflow(false)}
+                className="px-3 py-2 rounded-xl bg-bron-accent text-white text-[11px] font-bold"
+              >
+                Save as Workflow
+              </button>
+              {inferWorkflowRRule(lastCompletedTask) ? (
+                <button
+                  type="button"
+                  onClick={() => saveLastTaskAsWorkflow(true)}
+                  className="px-3 py-2 rounded-xl bg-bron-surface border border-bron-border text-bron-text text-[11px] font-bold"
+                >
+                  Save and Schedule
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={onOpenWorkflows}
+                className="px-3 py-2 rounded-xl bg-bron-surface border border-bron-border text-bron-text text-[11px] font-bold"
+              >
+                Open Workflows
+              </button>
+            </div>
+          </div>
+        )}
         <div className="bg-bron-surface/40 rounded-2xl p-1 relative ring-1 ring-bron-border/10 shadow-sm">
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-4 animate-fade-in">

@@ -38,8 +38,19 @@ contextBridge.exposeInMainWorld('bronAPI', {
   readSoul: () => ipcRenderer.invoke(IPC.SOUL_READ),
   updateSoul: (content: string) => ipcRenderer.invoke(IPC.SOUL_UPDATE, content),
   getCreditUsageHistory: (limit?: number) => ipcRenderer.invoke(IPC.GET_CREDIT_USAGE_HISTORY, limit),
-  getHistory: () => ipcRenderer.invoke(IPC.GET_HISTORY),
+  getHistory: (limit?: number) => ipcRenderer.invoke(IPC.GET_HISTORY, limit),
   addHistoryEntry: (url: string, title: string) => ipcRenderer.invoke(IPC.ADD_HISTORY_ENTRY, url, title),
+  deleteHistoryEntry: (id: number) => ipcRenderer.invoke(IPC.DELETE_HISTORY_ENTRY, id),
+  deleteHistoryUrl: (url: string) => ipcRenderer.invoke(IPC.DELETE_HISTORY_URL, url),
+  deleteHistoryRange: (start?: string, end?: string) =>
+    ipcRenderer.invoke(IPC.DELETE_HISTORY_RANGE, start, end),
+  clearHistory: () => ipcRenderer.invoke(IPC.CLEAR_HISTORY),
+  getBookmarks: () => ipcRenderer.invoke(IPC.GET_BOOKMARKS),
+  createBookmark: (bookmark: Record<string, unknown>) => ipcRenderer.invoke(IPC.CREATE_BOOKMARK, bookmark),
+  updateBookmark: (id: number, updates: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.UPDATE_BOOKMARK, id, updates),
+  removeBookmark: (id: number) => ipcRenderer.invoke(IPC.REMOVE_BOOKMARK, id),
+  searchBookmarks: (query: string) => ipcRenderer.invoke(IPC.SEARCH_BOOKMARKS, query),
 
   // ── Settings ─────────────────────────────────────────────────────
   getSettings: () => ipcRenderer.invoke(IPC.GET_SETTINGS),
@@ -56,6 +67,27 @@ contextBridge.exposeInMainWorld('bronAPI', {
   saveChatSession: (title: string, messages: any[], id?: number) =>
     ipcRenderer.invoke(IPC.SAVE_CHAT_SESSION, title, messages, id),
   deleteChatSession: (id: number) => ipcRenderer.invoke(IPC.DELETE_CHAT_SESSION, id),
+  getWorkflows: () => ipcRenderer.invoke(IPC.GET_WORKFLOWS),
+  saveWorkflow: (workflow: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_WORKFLOW, workflow),
+  deleteWorkflow: (id: number) => ipcRenderer.invoke(IPC.DELETE_WORKFLOW, id),
+  runWorkflowNow: (id: number) => ipcRenderer.invoke(IPC.RUN_WORKFLOW_NOW, id),
+  getWorkflowRuns: (workflowId?: number) => ipcRenderer.invoke(IPC.GET_WORKFLOW_RUNS, workflowId),
+  getWorkflowSchedules: (workflowId?: number) => ipcRenderer.invoke(IPC.GET_WORKFLOW_SCHEDULES, workflowId),
+  saveWorkflowSchedule: (schedule: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_WORKFLOW_SCHEDULE, schedule),
+  deleteWorkflowSchedule: (id: number) => ipcRenderer.invoke(IPC.DELETE_WORKFLOW_SCHEDULE, id),
+  pickExtensionDirectory: () => ipcRenderer.invoke(IPC.PICK_EXTENSION_DIRECTORY),
+  getBrowserExtensions: () => ipcRenderer.invoke(IPC.GET_BROWSER_EXTENSIONS),
+  saveBrowserExtension: (extension: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_BROWSER_EXTENSION, extension),
+  deleteBrowserExtension: (id: number) => ipcRenderer.invoke(IPC.DELETE_BROWSER_EXTENSION, id),
+  getSavedCredentials: () => ipcRenderer.invoke(IPC.GET_SAVED_CREDENTIALS),
+  saveSavedCredential: (credential: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_SAVED_CREDENTIAL, credential),
+  deleteSavedCredential: (id: number) => ipcRenderer.invoke(IPC.DELETE_SAVED_CREDENTIAL, id),
+  getAutofillProfiles: () => ipcRenderer.invoke(IPC.GET_AUTOFILL_PROFILES),
+  saveAutofillProfile: (profile: Record<string, unknown>) => ipcRenderer.invoke(IPC.SAVE_AUTOFILL_PROFILE, profile),
+  deleteAutofillProfile: (id: number) => ipcRenderer.invoke(IPC.DELETE_AUTOFILL_PROFILE, id),
+  getAutofillContext: (url: string) => ipcRenderer.invoke(IPC.GET_AUTOFILL_CONTEXT, url),
+  exportSyncBundle: () => ipcRenderer.invoke(IPC.EXPORT_SYNC_BUNDLE),
+  importSyncBundle: () => ipcRenderer.invoke(IPC.IMPORT_SYNC_BUNDLE),
   openReportWindow: (html: string) => ipcRenderer.invoke(IPC.OPEN_REPORT_WINDOW, html),
   exitApp: () => ipcRenderer.invoke(IPC.EXIT_APP),
   clearData: () => ipcRenderer.invoke(IPC.CLEAR_DATA),
@@ -63,6 +95,10 @@ contextBridge.exposeInMainWorld('bronAPI', {
   openHistory: () => ipcRenderer.invoke(IPC.OPEN_HISTORY),
   newWindow: () => ipcRenderer.invoke(IPC.NEW_WINDOW),
   newIncognitoWindow: () => ipcRenderer.invoke(IPC.NEW_INCOGNITO_WINDOW),
+  switchBrowserProfile: (profileName: string) => ipcRenderer.invoke(IPC.SWITCH_BROWSER_PROFILE, profileName),
+  getRuntimeContext: () => ipcRenderer.invoke(IPC.GET_RUNTIME_CONTEXT),
+  setBrowserViewport: (viewport: Record<string, unknown>) => ipcRenderer.invoke(IPC.SET_BROWSER_VIEWPORT, viewport),
+  adjustBrowserZoom: (delta: number) => ipcRenderer.invoke(IPC.ADJUST_BROWSER_ZOOM, delta),
 
   // ── Browser Highlight ──────────────────────────────────────────
   highlightElement: (selector: string) => ipcRenderer.invoke(IPC.HIGHLIGHT_ELEMENT, selector),
@@ -99,6 +135,10 @@ contextBridge.exposeInMainWorld('bronAPI', {
   onNewTabRequest: (cb: (_e: unknown, url: string) => void) => {
     ipcRenderer.on('BROWSER_NEW_TAB_REQUEST', cb);
     return () => ipcRenderer.removeListener('BROWSER_NEW_TAB_REQUEST', cb);
+  },
+  onShowHistoryPanel: (cb: (_e: unknown) => void) => {
+    ipcRenderer.on(IPC.SHOW_HISTORY_PANEL, cb);
+    return () => ipcRenderer.removeListener(IPC.SHOW_HISTORY_PANEL, cb);
   },
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
 });

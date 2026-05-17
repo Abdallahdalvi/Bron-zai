@@ -71,17 +71,6 @@ body {
   overflow: hidden;
 }
 
-webview, #browser-webview {
-  position: absolute !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  border: none !important;
-}
-
 /* Chat Styles */
 .chat-bubble-user {
   background: linear-gradient(135deg, #3b82f6, #2563eb);
