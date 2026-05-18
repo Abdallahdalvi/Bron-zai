@@ -8,6 +8,7 @@ export interface SkillDefinition {
   tools: string[];
   scriptDir: string;
   sourcePath: string;
+  scriptPath?: string;
 }
 
 export class SkillsRegistry {
@@ -32,6 +33,19 @@ export class SkillsRegistry {
 
         const parsed = this.parseSkillMarkdown(content, skillDir, skillMdPath);
         if (!parsed.name) continue;
+
+        const scriptPath = path.join(skillDir, 'index.js');
+        const scriptExists = await fs.stat(scriptPath).then(s => s.isFile()).catch(() => false);
+        if (scriptExists) {
+          parsed.scriptPath = scriptPath;
+        } else {
+          const pyPath = path.join(skillDir, 'index.py');
+          const pyExists = await fs.stat(pyPath).then(s => s.isFile()).catch(() => false);
+          if (pyExists) {
+            parsed.scriptPath = pyPath;
+          }
+        }
+
         this.skills.set(parsed.name.toLowerCase(), parsed);
       }
     }

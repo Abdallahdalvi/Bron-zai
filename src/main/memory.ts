@@ -1232,7 +1232,7 @@ export function getSettings(): Settings {
   const effectiveMaxSteps =
     rawMaxSteps === '50'
       ? 500
-      : Number.isFinite(parsedMaxSteps) && parsedMaxSteps > 0
+      : Number.isFinite(parsedMaxSteps) && parsedMaxSteps >= 0
         ? parsedMaxSteps
         : DEFAULT_SETTINGS.maxSteps;
 

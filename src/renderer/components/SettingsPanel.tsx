@@ -21,6 +21,13 @@ const SettingsPanel: React.FC<Props> = ({ onClose }) => {
     syncBundlePath: '',
     domainProfiles: '{}',
     theme: 'dark',
+    maxSteps: 0,
+    maxRuntimeMinutes: 0,
+    costGuardMaxCostPerTask: 1.0,
+    costGuardMaxCostPerDay: 10.0,
+    costGuardMaxRequestsPerMinute: 30,
+    costGuardMaxConsecutiveErrors: 5,
+    costGuardCooldownMs: 60000,
   });
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [extensions, setExtensions] = useState<BrowserExtensionRecord[]>([]);
@@ -97,7 +104,14 @@ const SettingsPanel: React.FC<Props> = ({ onClose }) => {
           syncPassphrase: s.syncPassphrase || '',
           syncBundlePath: s.syncBundlePath || '',
           domainProfiles: s.domainProfiles || '{}',
-          theme: s.theme || 'dark'
+          theme: s.theme || 'dark',
+          maxSteps: typeof s.maxSteps === 'number' ? s.maxSteps : 0,
+          maxRuntimeMinutes: typeof s.maxRuntimeMinutes === 'number' ? s.maxRuntimeMinutes : 0,
+          costGuardMaxCostPerTask: typeof s.costGuardMaxCostPerTask === 'number' ? s.costGuardMaxCostPerTask : 1.0,
+          costGuardMaxCostPerDay: typeof s.costGuardMaxCostPerDay === 'number' ? s.costGuardMaxCostPerDay : 10.0,
+          costGuardMaxRequestsPerMinute: typeof s.costGuardMaxRequestsPerMinute === 'number' ? s.costGuardMaxRequestsPerMinute : 30,
+          costGuardMaxConsecutiveErrors: typeof s.costGuardMaxConsecutiveErrors === 'number' ? s.costGuardMaxConsecutiveErrors : 5,
+          costGuardCooldownMs: typeof s.costGuardCooldownMs === 'number' ? s.costGuardCooldownMs : 60000,
         });
         if (s.apiKey) fetchCredits(s.apiKey);
       }
@@ -489,6 +503,131 @@ const SettingsPanel: React.FC<Props> = ({ onClose }) => {
                   placeholder='{"web.whatsapp.com":"Use row context buttons for delete/archive. Avoid repeated left-click loops.","docs.google.com":"Prefer visible text targets over brittle selectors."}'
                   className="w-full bg-bron-surface border border-bron-border rounded-xl px-3 py-2.5 text-xs text-bron-text outline-none resize-y font-mono"
                 />
+              </div>
+            </div>
+          </section>
+
+          {/* Performance & Safety Limits Section */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2 text-bron-accent">
+              <Cpu className="w-4 h-4" />
+              <h3 className="text-xs font-extrabold uppercase tracking-widest">Performance & Safety Limits</h3>
+            </div>
+
+            <div className="ml-2 bg-bron-surface/30 border border-bron-border p-5 rounded-2xl space-y-6">
+              {/* Max Steps Slider */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold text-bron-text">Max Steps per Task</h4>
+                    <p className="text-[10px] text-bron-text-dim">Maximum number of actions allowed per execution session.</p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-bron-accent/20 border border-bron-accent/30 text-xs font-black text-bron-accent">
+                    {settings.maxSteps === 0 ? 'Unlimited (0)' : `${settings.maxSteps} steps`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="150"
+                  step="5"
+                  value={settings.maxSteps || 0}
+                  onChange={(e) => setSettings({ ...settings, maxSteps: parseInt(e.target.value, 10) })}
+                  className="w-full h-1.5 bg-bron-bg border border-bron-border rounded-lg appearance-none cursor-pointer accent-bron-accent"
+                />
+              </div>
+
+              {/* Max Runtime Slider */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold text-bron-text">Max Task Duration</h4>
+                    <p className="text-[10px] text-bron-text-dim">Maximum execution runtime before automatic graceful stop.</p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-bron-accent/20 border border-bron-accent/30 text-xs font-black text-bron-accent">
+                    {settings.maxRuntimeMinutes === 0 ? 'Unlimited (0)' : `${settings.maxRuntimeMinutes} mins`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="60"
+                  step="2"
+                  value={settings.maxRuntimeMinutes || 0}
+                  onChange={(e) => setSettings({ ...settings, maxRuntimeMinutes: parseInt(e.target.value, 10) })}
+                  className="w-full h-1.5 bg-bron-bg border border-bron-border rounded-lg appearance-none cursor-pointer accent-bron-accent"
+                />
+              </div>
+
+              {/* Cost Guard Segments */}
+              <div className="border-t border-bron-border/50 pt-4 space-y-4">
+                <div className="flex items-center gap-2 mb-2 text-bron-text-dim">
+                  <Shield className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-black uppercase tracking-wider">Cost Guard & Circuit Breaker</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-bron-text-dim uppercase tracking-wider">Max Cost / Task</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-xs font-bold text-bron-text-dim">$</span>
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0.01"
+                        value={settings.costGuardMaxCostPerTask || 1.0}
+                        onChange={(e) => setSettings({ ...settings, costGuardMaxCostPerTask: parseFloat(e.target.value) || 1.0 })}
+                        className="w-full bg-bron-bg border border-bron-border rounded-xl pl-6 pr-3 py-2 text-xs text-bron-text font-bold outline-none focus:border-bron-accent"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-bron-text-dim uppercase tracking-wider">Max Cost / Day</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-xs font-bold text-bron-text-dim">$</span>
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.1"
+                        value={settings.costGuardMaxCostPerDay || 10.0}
+                        onChange={(e) => setSettings({ ...settings, costGuardMaxCostPerDay: parseFloat(e.target.value) || 10.0 })}
+                        className="w-full bg-bron-bg border border-bron-border rounded-xl pl-6 pr-3 py-2 text-xs text-bron-text font-bold outline-none focus:border-bron-accent"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-bron-text-dim uppercase tracking-wider">Max Requests / Min</label>
+                    <input
+                      type="number"
+                      min="5"
+                      max="120"
+                      value={settings.costGuardMaxRequestsPerMinute || 30}
+                      onChange={(e) => setSettings({ ...settings, costGuardMaxRequestsPerMinute: parseInt(e.target.value, 10) || 30 })}
+                      className="w-full bg-bron-bg border border-bron-border rounded-xl px-3 py-2 text-xs text-bron-text font-bold outline-none focus:border-bron-accent"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-bron-text-dim uppercase tracking-wider">
+                      Consecutive Errors {settings.costGuardMaxConsecutiveErrors === 0 ? '(Unlimited)' : ''}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="20"
+                      value={settings.costGuardMaxConsecutiveErrors === undefined ? 5 : settings.costGuardMaxConsecutiveErrors}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setSettings({ ...settings, costGuardMaxConsecutiveErrors: isNaN(val) ? 5 : val });
+                      }}
+                      className="w-full bg-bron-bg border border-bron-border rounded-xl px-3 py-2 text-xs text-bron-text font-bold outline-none focus:border-bron-accent"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </section>

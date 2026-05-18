@@ -74,7 +74,14 @@ export class WebContentsViewController implements AgentAutomationController {
             const rect = el.getBoundingClientRect();
             if (rect.width < 4 || rect.height < 4) return false;
             const style = window.getComputedStyle(el);
-            return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            let parent = el.parentElement;
+            while (parent) {
+              const pStyle = window.getComputedStyle(parent);
+              if (pStyle.display === 'none' || pStyle.visibility === 'hidden') return false;
+              parent = parent.parentElement;
+            }
+            return true;
           };
           const toSelector = (el) => {
             const tag = (el.tagName || 'div').toLowerCase();
@@ -89,16 +96,75 @@ export class WebContentsViewController implements AgentAutomationController {
             return tag;
           };
 
+          const getPrunedDomTree = () => {
+            const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
+            const isInteractive = (el) => {
+              return el.matches?.(clickableSelector) || ['input', 'textarea', 'select'].includes(el.tagName.toLowerCase());
+            };
+
+            let clickableIdx = 0;
+            let inputIdx = 0;
+
+            const traverse = (node, depth = 0) => {
+              if (!isVisible(node)) return '';
+              const tagName = node.tagName.toLowerCase();
+              if (tagName === 'script' || tagName === 'style' || tagName === 'svg') return '';
+
+              let badge = '';
+              let label = '';
+              if (isInteractive(node)) {
+                if (['input', 'textarea', 'select'].includes(tagName)) {
+                  inputIdx++;
+                  badge = '[I' + inputIdx + ']';
+                  label = node.getAttribute('aria-label') || node.getAttribute('name') || node.getAttribute('placeholder') || '';
+                } else {
+                  clickableIdx++;
+                  badge = '[C' + clickableIdx + ']';
+                  label = node.textContent?.trim() || node.getAttribute('aria-label') || node.getAttribute('title') || '';
+                  label = label.replace(/\\s+/g, ' ').slice(0, 50);
+                }
+              }
+
+              const children = Array.from(node.children);
+              const childStrings = children
+                .map(child => traverse(child, depth + 1))
+                .filter(Boolean);
+
+              if (!badge && childStrings.length === 0) {
+                const text = Array.from(node.childNodes)
+                  .filter(n => n.nodeType === 3)
+                  .map(n => n.textContent?.trim())
+                  .filter(Boolean)
+                  .join(' ');
+                if (text.length > 5 && text.length < 150) {
+                  return '  '.repeat(depth) + '- "' + text.replace(/"/g, '\\\\"') + '"';
+                }
+                return '';
+              }
+
+              const indent = '  '.repeat(depth);
+              const elementStr = badge
+                ? indent + '- ' + badge + ' ' + tagName.toUpperCase() + (label ? ': "' + label.replace(/"/g, '\\\\"') + '"' : '')
+                : indent + '- ' + tagName.toUpperCase();
+
+              return [elementStr, ...childStrings].join('\\n');
+            };
+
+            return traverse(document.body) || '';
+          };
+
           const clickables = [];
           const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
           document.querySelectorAll(clickableSelector).forEach((el) => {
             if (!isVisible(el)) return;
-            const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).replace(/\\s+/g, ' ').trim();
+            const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
+            const sel = toSelector(el);
+            if (!text && sel === el.tagName.toLowerCase()) return;
             clickables.push({
-              text: text.slice(0, 160),
+              text: text.slice(0, 140),
               tag: (el.tagName || '').toLowerCase(),
               role: el.getAttribute('role') || undefined,
-              selector: toSelector(el),
+              selector: sel,
             });
           });
 
@@ -119,9 +185,10 @@ export class WebContentsViewController implements AgentAutomationController {
           return {
             url: location.href,
             title: document.title || '',
-            visibleText: (document.body?.innerText || '').replace(/\\s+\\n/g, '\\n').slice(0, 10000),
+            visibleText: (document.body?.innerText || '').replace(/[ \t]+/g, ' ').replace(/\\n+/g, '\\n').trim().slice(0, 8000),
             clickableElements: clickables.slice(0, 100),
             inputFields: inputFields.slice(0, 40),
+            prunedDomTree: getPrunedDomTree(),
           };
         } catch (e) {
           return {
@@ -130,6 +197,7 @@ export class WebContentsViewController implements AgentAutomationController {
             visibleText: 'Extraction error: ' + (e?.message || String(e)),
             clickableElements: [],
             inputFields: [],
+            prunedDomTree: '',
           };
         }
       })();`,
@@ -148,9 +216,141 @@ export class WebContentsViewController implements AgentAutomationController {
     await this.ensureBootTab();
     const active = this.getActiveTab();
     if (!active) return '';
+    
+    // Inject visual index badges before taking screenshot
+    await this.injectVisualBadges();
+    
+    // Short sleep to ensure the page has drawn the badges
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    
     const image = await active.view.webContents.capturePage();
+    
+    // Clear visual index badges immediately after
+    await this.clearVisualBadges();
+    
     return image?.toDataURL ? String(image.toDataURL()) : '';
   }
+
+  private async injectVisualBadges(): Promise<void> {
+    const active = this.getActiveTab();
+    if (!active) return;
+    try {
+      await active.view.webContents.executeJavaScript(`
+        (function() {
+          try {
+            document.getElementById('bron-overlay-container')?.remove();
+            
+            const isVisible = (el) => {
+              if (!(el instanceof HTMLElement)) return false;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 4 || rect.height < 4) return false;
+              const style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+              let parent = el.parentElement;
+              while (parent) {
+                const pStyle = window.getComputedStyle(parent);
+                if (pStyle.display === 'none' || pStyle.visibility === 'hidden') return false;
+                parent = parent.parentElement;
+              }
+              return true;
+            };
+            
+            const container = document.createElement('div');
+            container.id = 'bron-overlay-container';
+            Object.assign(container.style, {
+              position: 'absolute',
+              top: '0',
+              left: '0',
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none',
+              zIndex: '2147483645'
+            });
+            
+            const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
+            let clickIdx = 0;
+            document.querySelectorAll(clickableSelector).forEach((el) => {
+              if (!isVisible(el) || clickIdx >= 100) return;
+              clickIdx++;
+              const rect = el.getBoundingClientRect();
+              
+              const badge = document.createElement('div');
+              badge.innerText = 'C' + clickIdx;
+              Object.assign(badge.style, {
+                position: 'absolute',
+                top: (rect.top + window.scrollY) + 'px',
+                left: (rect.left + window.scrollX) + 'px',
+                background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                color: 'white',
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+                fontSize: '9px',
+                fontWeight: 'bold',
+                padding: '2px 4px',
+                borderRadius: '3px',
+                border: '1px solid rgba(255,255,255,0.7)',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                zIndex: '2147483646',
+                pointerEvents: 'none',
+                userSelect: 'none',
+                lineHeight: '1',
+                whiteSpace: 'nowrap'
+              });
+              container.appendChild(badge);
+            });
+            
+            let inputIdx = 0;
+            document.querySelectorAll('input, textarea, select').forEach((el) => {
+              if (!isVisible(el) || inputIdx >= 40) return;
+              inputIdx++;
+              const rect = el.getBoundingClientRect();
+              
+              const badge = document.createElement('div');
+              badge.innerText = 'I' + inputIdx;
+              Object.assign(badge.style, {
+                position: 'absolute',
+                top: (rect.top + window.scrollY) + 'px',
+                left: (rect.left + window.scrollX) + 'px',
+                background: 'linear-gradient(135deg, #db2777 0%, #be185d 100%)',
+                color: 'white',
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+                fontSize: '9px',
+                fontWeight: 'bold',
+                padding: '2px 4px',
+                borderRadius: '3px',
+                border: '1px solid rgba(255,255,255,0.7)',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                zIndex: '2147483646',
+                pointerEvents: 'none',
+                userSelect: 'none',
+                lineHeight: '1',
+                whiteSpace: 'nowrap'
+              });
+              container.appendChild(badge);
+            });
+            
+            document.body.appendChild(container);
+          } catch (e) {
+            console.error('Failed to inject visual badges:', e);
+          }
+        })();
+      `);
+    } catch (err) {
+      console.error('injectVisualBadges execution failed:', err);
+    }
+  }
+
+  private async clearVisualBadges(): Promise<void> {
+    const active = this.getActiveTab();
+    if (!active) return;
+    try {
+      await active.view.webContents.executeJavaScript(`
+        document.getElementById('bron-overlay-container')?.remove();
+      `);
+    } catch (err) {
+      console.error('clearVisualBadges execution failed:', err);
+    }
+  }
+
 
   async getPdfData(): Promise<string> {
     await this.ensureBootTab();
@@ -309,8 +509,11 @@ export class WebContentsViewController implements AgentAutomationController {
   async click(selector: string): Promise<string> {
     const active = await this.requireActiveTab();
     const native = await this.nativeClickSelector(active, selector, 'left');
-    if (native) return native;
-    return await this.runClickFallback(active, selector, false);
+    const fallback = await this.runClickFallback(active, selector, false);
+    if (fallback.includes('failed') || fallback.includes('error')) {
+      return native || fallback;
+    }
+    return fallback;
   }
 
   async clickAt(x: number, y: number): Promise<string> {
@@ -326,8 +529,11 @@ export class WebContentsViewController implements AgentAutomationController {
   async rightClick(selector: string): Promise<string> {
     const active = await this.requireActiveTab();
     const native = await this.nativeClickSelector(active, selector, 'right');
-    if (native) return native;
-    return await this.runClickFallback(active, selector, true);
+    const fallback = await this.runClickFallback(active, selector, true);
+    if (fallback.includes('failed') || fallback.includes('error')) {
+      return native || fallback;
+    }
+    return fallback;
   }
 
   async rightClickAt(x: number, y: number): Promise<string> {
@@ -1260,7 +1466,7 @@ export class WebContentsViewController implements AgentAutomationController {
             clientX: x,
             clientY: y,
           }));
-          if (!right && typeof el.click === 'function') {
+          if (!${right} && typeof el.click === 'function') {
             el.click();
           }
           return '${right ? 'Right-clicked' : 'Clicked'}: ' + sel;

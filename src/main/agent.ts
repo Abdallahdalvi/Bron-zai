@@ -47,6 +47,7 @@ import {
   updateSoul as updateSoulMemory,
   writeDailyMemory as writeDailyMemoryEntry,
 } from '../memory';
+import { runSkill } from './skills';
 
 let isRunning = false;
 let shouldStop = false;
@@ -365,32 +366,42 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
           return;
         }
 
+        const maxErrors = typeof settings.costGuardMaxConsecutiveErrors === 'number'
+          ? settings.costGuardMaxConsecutiveErrors
+          : 5;
+
         if (errMsg.includes('429') || errMsg.includes('rate limit')) {
           apiRetries++;
-          if (apiRetries >= 3) {
-            send(IPC.AGENT_ERROR, 'Rate limited by OpenRouter after 3 retries. Please wait a minute and try again.');
+          if (maxErrors > 0 && apiRetries >= maxErrors) {
+            send(IPC.AGENT_ERROR, `Rate limited by OpenRouter after ${maxErrors} retries. Please wait a minute and try again.`);
             updateTaskStatus(taskId, 'failed');
             return;
           }
+          const retryMessage = maxErrors === 0
+            ? `Rate limited. Waiting 10 seconds before retry (attempt ${apiRetries})...`
+            : `Rate limited. Waiting 10 seconds before retry (${apiRetries}/${maxErrors})...`;
           send(IPC.AGENT_STEP, {
             step,
             type: 'error',
-            message: `Rate limited. Waiting 10 seconds before retry (${apiRetries}/3)...`,
+            message: retryMessage,
           });
           await sleep(10000);
           continue;
         }
 
         apiRetries++;
-        if (apiRetries >= 3) {
-          send(IPC.AGENT_ERROR, `API failed after 3 attempts: ${errMsg.split('\n')[0]}`);
+        if (maxErrors > 0 && apiRetries >= maxErrors) {
+          send(IPC.AGENT_ERROR, `API failed after ${maxErrors} attempts: ${errMsg.split('\n')[0]}`);
           updateTaskStatus(taskId, 'failed');
           return;
         }
+        const errorMessage = maxErrors === 0
+          ? `API Error (attempt ${apiRetries}): ${errMsg.split('\n')[0]}`
+          : `API Error (retry ${apiRetries}/${maxErrors}): ${errMsg.split('\n')[0]}`;
         send(IPC.AGENT_STEP, {
           step,
           type: 'error',
-          message: `API Error (retry ${apiRetries}/3): ${errMsg.split('\n')[0]}`,
+          message: errorMessage,
         });
         await sleep(2000);
         continue;
@@ -1144,16 +1155,18 @@ async function executeAction(
         return `Page summary - Title: ${state.title}, URL: ${state.url}, Text preview: ${state.visibleText.slice(0, 1500)}`;
       }
 
+      case 'run_skill': {
+        const skillName = String(action.target || '').trim();
+        const skillArgs = action.value || '';
+        return await runSkill(skillName, bc, skillArgs);
+      }
+
       case 'new_page':
       case 'new_tab': {
-        // HARD LIMIT: Max 8 tabs total
         const currentTabs = await bc.getTabs();
-        if (currentTabs.length >= 8) {
-          return 'ERROR: Maximum 8 tabs reached. Complete task on current tabs instead of opening new ones.';
-        }
         const target = action.target || action.value || undefined;
         const tabId = await bc.newTab(target);
-        return `Opened new tab: ${tabId} (${currentTabs.length + 1}/8 tabs)`;
+        return `Opened new tab: ${tabId} (${currentTabs.length + 1} active tabs)`;
       }
 
       case 'switch_tab':
@@ -1713,6 +1726,9 @@ function formatSnapshot(state: any, enhanced = false): string {
     `SNAPSHOT ${enhanced ? '(enhanced)' : ''}`.trim(),
     `TITLE: ${state.title || ''}`,
     `URL: ${state.url || ''}`,
+    '',
+    'PRUNED DOM TREE LAYOUT:',
+    state.prunedDomTree || '(none)',
     '',
     'CLICKABLE:',
     ...clickableLines,
@@ -3167,121 +3183,6 @@ function applyExecutionHeuristics(
     inviteClickCounts: Map<string, number>;
   },
 ): { action: AgentAction; blockReason?: string; note?: string } {
-  const actionSignature = buildActionSignature(action);
-  const stateActionKey = `${stateFingerprint}::${actionSignature}`;
-  if (stateActionCounts.size > 4000) {
-    stateActionCounts.clear();
-  }
-  const attemptsOnSameState = stateActionCounts.get(stateActionKey) || 0;
-  stateActionCounts.set(stateActionKey, attemptsOnSameState + 1);
-  
-  // Allow more attempts for form interactions (filling forms requires multiple fields)
-  // and for SPAs where URL doesn't change but UI does
-  const isFormAction = ['fill', 'type', 'clear', 'click', 'press_key', 'press_enter'].includes(action.action);
-  const maxAttempts = (action.action === 'press_key' || action.action === 'press_enter') ? 35 : (isFormAction ? 8 : 5);
-  
-  if (attemptsOnSameState >= maxAttempts) {
-    return {
-      action,
-      blockReason: `Action "${action.action}" blocked after ${maxAttempts} attempts on same page state. Try a completely different approach or extract data with evaluate_script.`,
-    };
-  }
-
-  const visibleText = String(state?.visibleText || '').toLowerCase();
-  const authChallengeDetected = /otp|verification code|security code|2-step|two-factor|two step|one-time password/.test(visibleText);
-  const accountChooserDetected = /choose an account|select an account|use another account|continue as/.test(visibleText);
-
-  if (authChallengeDetected) {
-    if ((action.action === 'fill' || action.action === 'type') && /password/i.test(action.value || '')) {
-      return {
-        action,
-        blockReason: 'Verification code step detected. Do not type a password into this challenge screen.',
-      };
-    }
-    if ((action.action === 'click' || action.action === 'press_enter') && attemptsOnSameState >= 2) {
-      return {
-        action,
-        blockReason: 'Verification flow appears unchanged. Wait for a new code, different field, or visible state change before retrying.',
-      };
-    }
-  }
-
-  if (accountChooserDetected && action.action === 'fill' && /email|user|login/i.test(action.target || '')) {
-    return {
-      action,
-      blockReason: 'Account chooser detected. Select a visible account option or "Use another account" instead of typing into the old field again.',
-    };
-  }
-  
-  const linkedin = isLinkedInUrl(state?.url);
-  if (!linkedin) {
-    linkedInFlow.consecutiveScrolls = 0;
-    return { action };
-  }
-
-  if (action.action === 'click' && looksLikeLinkedInLoginAction(action)) {
-    linkedInFlow.loginClickCount += 1;
-    if (linkedInFlow.loginClickCount > 1) {
-      return {
-        action,
-        blockReason: 'LinkedIn login loop detected. Skipping repeated login click and continuing on visible results.',
-      };
-    }
-  }
-
-  if ((action.action === 'type' || action.action === 'fill') && looksLikeSearchInputAction(action.target)) {
-    const q = normalizeQuery(action.value);
-    if (q) {
-      const qCount = (linkedInFlow.queryTypeCounts.get(q) || 0) + 1;
-      linkedInFlow.queryTypeCounts.set(q, qCount);
-      if (qCount > 2) {
-        return {
-          action,
-          blockReason: `Skipping repeated LinkedIn search query "${q}".`,
-        };
-      }
-    }
-  }
-
-  if (action.action === 'click') {
-    const inviteKey = extractInviteKey(action.target);
-    if (inviteKey) {
-      const inviteCount = (linkedInFlow.inviteClickCounts.get(inviteKey) || 0) + 1;
-      linkedInFlow.inviteClickCounts.set(inviteKey, inviteCount);
-      if (inviteCount > 1) {
-        return {
-          action,
-          blockReason: `Skipping duplicate invite click for ${inviteKey}.`,
-        };
-      }
-    }
-  }
-
-  if (action.action === 'scroll') {
-    linkedInFlow.consecutiveScrolls += 1;
-    if (linkedInFlow.consecutiveScrolls > 8) {
-      const nextSelector = findLinkedInNextPageSelector(state);
-      if (nextSelector) {
-        return {
-          action: {
-            ...action,
-            action: 'click',
-            target: nextSelector,
-            value: '',
-            reason: 'Move to next LinkedIn results page to avoid excessive scrolling',
-          },
-          note: 'Loop guard: replaced repeated scrolls with next-page navigation.',
-        };
-      }
-      return {
-        action,
-        blockReason: 'Too many consecutive LinkedIn scrolls without progress. Try a different visible action.',
-      };
-    }
-  } else {
-    linkedInFlow.consecutiveScrolls = 0;
-  }
-
   return { action };
 }
 

@@ -532,25 +532,25 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden min-w-0">
         <div className="flex-1 flex flex-col overflow-hidden transition-all duration-300 relative min-w-0">
-          <div ref={browserViewportRef} className="flex-1 relative bg-bron-bg overflow-hidden shadow-2xl">
-            {browserReady ? (
-              <div className="w-full h-full relative">
-                <div className="absolute inset-0 flex items-center justify-center text-[11px] text-bron-text-dim pointer-events-none">
-                  Main-process browser view active
-                </div>
-
-                {agentRunning && activeTab?.id === agentTabId && (
-                  <>
-                    <div className="aura-top aura-edge" />
-                    <div className="aura-bottom aura-edge" />
-                    <div className="aura-left aura-edge" />
-                    <div className="aura-right aura-edge" />
-                    <div className="aura-corner aura-corner-tl" />
-                    <div className="aura-corner aura-corner-tr" />
-                    <div className="aura-corner aura-corner-bl" />
-                    <div className="aura-corner aura-corner-br" />
-                  </>
-                )}
+          <div className={`flex-1 flex flex-col relative overflow-hidden transition-all duration-300 ${agentRunning ? 'p-[4px]' : ''}`}>
+            {agentRunning && (
+              <>
+                <div className="aura-top aura-edge" />
+                <div className="aura-bottom aura-edge" />
+                <div className="aura-left aura-edge" />
+                <div className="aura-right aura-edge" />
+                <div className="aura-corner aura-corner-tl" />
+                <div className="aura-corner aura-corner-tr" />
+                <div className="aura-corner aura-corner-bl" />
+                <div className="aura-corner aura-corner-br" />
+              </>
+            )}
+            <div ref={browserViewportRef} className="flex-1 relative bg-bron-bg overflow-hidden shadow-2xl">
+              {browserReady ? (
+                <div className="w-full h-full relative">
+                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-bron-text-dim pointer-events-none">
+                    Main-process browser view active
+                  </div>
 
                 {!controllerHealthy && (
                   <div className="absolute top-4 left-4 z-50 animate-slide-up">
@@ -597,6 +597,7 @@ export default function App() {
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
 

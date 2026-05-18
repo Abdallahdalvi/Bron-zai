@@ -141,16 +141,7 @@ body {
   50% { opacity: 1; }
 }
 
-.aura-edge {
-  position: absolute;
-  z-index: 50;
-  pointer-events: none;
-  opacity: 0; /* Hidden by default, only glow visible */
-}
 
-.aura-top, .aura-bottom, .aura-left, .aura-right {
-  display: none; /* User wants them removed */
-}
 
 .aura-container {
   position: absolute;

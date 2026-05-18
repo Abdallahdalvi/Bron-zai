@@ -40,6 +40,7 @@ export interface BrowserState {
   tabs: TabInfo[];
   tabGroups?: TabGroupInfo[];
   screenshot?: string; // base64 jpeg
+  prunedDomTree?: string;
 }
 
 export interface RuntimeContext {
@@ -164,6 +165,7 @@ export interface AgentAction {
     | 'soul_read'
     | 'soul_update'
     | 'remember'
+    | 'run_skill'
     | 'done';
   target: string;
   value: string;
@@ -256,6 +258,7 @@ export const VALID_ACTIONS = [
   'soul_read',
   'soul_update',
   'remember',
+  'run_skill',
   'done',
 ] as const;
 
@@ -500,8 +503,8 @@ export const DEFAULT_SETTINGS: Settings = {
   syncAccountName: 'Local Browser',
   syncPassphrase: '',
   syncBundlePath: '',
-  maxSteps: 30,           // Sensible default (was 0 = unlimited)
-  maxRuntimeMinutes: 10,  // Sensible default (was 0 = unlimited)
+  maxSteps: 0,           // 0 = unlimited steps
+  maxRuntimeMinutes: 0,  // 0 = unlimited runtime
   browserProfile: 'default',
   domainProfiles: '{}',
   theme: 'dark',
