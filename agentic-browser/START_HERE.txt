@@ -1,0 +1,91 @@
+================================================================================
+    AGENTIC BROWSER V2 - AUTOMATIC SETUP & LAUNCH
+================================================================================
+
+PYTHON IS INSTALLED! NOW LET'S FINISH THE SETUP...
+
+================================================================================
+STEP 1: RUN THE SETUP (ONE CLICK!)
+================================================================================
+
+Double-click this file:  >> RUN_ME_FIRST.bat <<
+
+This will:
+  [X] Create virtual environment
+  [X] Install all Python packages (playwright, openai, etc.)
+  [X] Install Chromium browser for automation
+  [X] Check your API key setup
+  [X] Launch the interactive menu
+
+================================================================================
+STEP 2: ADD YOUR API KEY (IF PROMPTED)
+================================================================================
+
+When the .env file opens, add your API key:
+
+OPENAI_API_KEY=sk-your-actual-key-here
+
+Get your key from: https://platform.openai.com/api-keys
+
+Save the file and close Notepad, then continue.
+
+================================================================================
+STEP 3: CHOOSE A MODE
+================================================================================
+
+After setup completes, choose from the menu:
+
+  [1] Interactive Mode - Full control with prompts
+  [2] Quick Test - Verify it works on example.com
+  [3] Multi-Tab Demo - Compare multiple sites
+  [4] Vision Demo - AI screenshot analysis
+  [5] Custom - Enter your own commands
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: "Python not found"
+Fix: Restart your computer after installing Python, then try again
+
+Problem: "pip install failed"
+Fix: Check your internet connection, then run RUN_ME_FIRST.bat again
+
+Problem: "No API key"
+Fix: Edit .env file and add: OPENAI_API_KEY=sk-your-key
+
+Problem: "Playwright browser not found"
+Fix: Run this command manually:
+     venv\Scripts\activate
+     playwright install chromium
+
+================================================================================
+WHAT YOU CAN DO WITH AGENTIC BROWSER
+================================================================================
+
+Examples you can type in Interactive Mode:
+
+  -> "Go to news.ycombinator.com and get the top 3 headlines"
+  -> "Search for 'Python tutorials' on google.com"
+  -> "Fill the contact form on example.com with name John"
+  -> "Compare laptop prices on amazon.com and bestbuy.com"
+  -> "Go to github.com/trending and list top repositories"
+
+================================================================================
+FILES IN THIS FOLDER
+================================================================================
+
+  RUN_ME_FIRST.bat       <-- DOUBLE-CLICK THIS TO START
+  AUTO_SETUP.bat         Automatic installation script
+  quick_start.bat        Quick launch menu
+  main_v2.py            Main application (run with Python)
+  agent_v2.py           Core agent with all features
+  .env                  Your API key configuration
+  requirements.txt      Python package list
+  START_HERE.txt        This file
+
+================================================================================
+
+Ready? Double-click >> RUN_ME_FIRST.bat << and watch the magic!
+
+================================================================================
