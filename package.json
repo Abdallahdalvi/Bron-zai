@@ -9,9 +9,9 @@
     "dev:renderer": "vite",
     "dev:main": "tsc -p tsconfig.main.json",
     "dev:main:watch": "tsc -p tsconfig.main.json --watch",
-    "dev": "npm run dev:main && concurrently -k \"npm run dev:main:watch\" \"npm run dev:renderer\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "npm run dev:main && concurrently -k \"npm run dev:main:watch\" \"npm run dev:renderer\" \"wait-on http://localhost:5173 && electron . --remote-debugging-port=9222\"",
     "build:renderer": "vite build --configLoader runner",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "tsc -p tsconfig.main.json && node scripts/copy-skills.js",
     "build": "npm run build:main && npm run build:renderer",
     "dist:refresh-portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/rebuild-portable.ps1",
     "dist": "npm run build && npx electron-packager . Bron --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=\"^/src\" --ignore=\"^/\\.env\" --ignore=\"^/tsconfig\" --ignore=\"^/vite\\.config\" --ignore=\"^/tailwind\" --ignore=\"^/postcss\" --ignore=\"^/\\.gitignore\" --ignore=\"^/README\" --ignore=\"^/electron-builder\" --ignore=\"^/release\"",
@@ -26,12 +26,14 @@
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "sql.js": "^1.11.0",
+    "ws": "^8.20.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/sql.js": "^1.4.9",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
@@ -48,4 +50,3 @@
     "wait-on": "^8.0.3"
   }
 }
-

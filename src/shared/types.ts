@@ -22,6 +22,11 @@ export interface ClickableElement {
   tag: string;
   role?: string;
   selector: string;
+  badge: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface InputField {
@@ -29,6 +34,11 @@ export interface InputField {
   label?: string;
   type: string;
   selector: string;
+  badge: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface BrowserState {
@@ -166,6 +176,9 @@ export interface AgentAction {
     | 'soul_update'
     | 'remember'
     | 'run_skill'
+    | 'act'
+    | 'extract'
+    | 'validate'
     | 'done';
   target: string;
   value: string;
@@ -259,6 +272,9 @@ export const VALID_ACTIONS = [
   'soul_update',
   'remember',
   'run_skill',
+  'act',
+  'extract',
+  'validate',
   'done',
 ] as const;
 

@@ -48,6 +48,7 @@ import {
   writeDailyMemory as writeDailyMemoryEntry,
 } from '../memory';
 import { runSkill } from './skills';
+import { act as aiAct, extract as aiExtract, validate as aiValidate } from './aiActions';
 
 let isRunning = false;
 let shouldStop = false;
@@ -519,6 +520,7 @@ BLOCKED SITES: ${failedSites.size > 0 ? Array.from(failedSites).join(', ') + ' -
         sessionId,
         taskId,
         getWindow,
+        { apiKey: settings.apiKey, model: settings.model },
       );
       lastResult = result;
       if (isFailureResult(result)) {
@@ -745,7 +747,9 @@ OPEN TABS:
 ${tabsStr}
 
 VISIBLE TEXT (first 10000 chars):
+<page_content>
 ${state.visibleText.slice(0, 10000)}
+</page_content>
 
 CLICKABLE ELEMENTS:
 ${clickableStr}
@@ -930,6 +934,7 @@ async function executeAction(
   sessionId?: number,
   taskId?: number,
   getWindow?: () => BrowserWindow | null,
+  openRouterOpts?: { apiKey: string; model: string },
 ): Promise<string> {
   try {
     switch (action.action) {
@@ -1640,6 +1645,33 @@ async function executeAction(
       case 'done':
         return action.value || 'Task completed.';
 
+      // ── AI High-Level Commands (Skyvern-style) ───────────────────
+      case 'act': {
+        if (!openRouterOpts?.apiKey) return 'act() failed: no API key configured';
+        const prompt = String(action.value || action.target || '').trim();
+        if (!prompt) return 'act() failed: missing instruction in value or target';
+        return await aiAct(bc, openRouterOpts, prompt);
+      }
+
+      case 'extract': {
+        if (!openRouterOpts?.apiKey) return 'extract() failed: no API key configured';
+        const prompt = String(action.value || action.target || '').trim();
+        let schema: Record<string, unknown> | undefined;
+        try {
+          if (action.target && action.value && action.target !== action.value) {
+            schema = JSON.parse(action.target);
+          }
+        } catch {}
+        return await aiExtract(bc, openRouterOpts, prompt, schema);
+      }
+
+      case 'validate': {
+        if (!openRouterOpts?.apiKey) return 'validate() failed: no API key configured';
+        const prompt = String(action.value || action.target || '').trim();
+        if (!prompt) return 'validate() failed: missing question in value or target';
+        return await aiValidate(bc, openRouterOpts, prompt);
+      }
+
       default:
         return `Unknown action: ${action.action}`;
     }
@@ -1658,6 +1690,10 @@ async function resolveSelectorFromActionTarget(
     throw new Error('missing selector/element id target');
   }
 
+  if (/^[~!@#$%^&*()_\-+=[\]][A-Za-z0-9_]+$/.test(target)) {
+    return `[unique_id="${target}"]`;
+  }
+
   if (looksLikeSelector(target)) {
     return target;
   }
@@ -1665,6 +1701,13 @@ async function resolveSelectorFromActionTarget(
   const state = await bc.getBrowserState();
   const clickable = state.clickableElements || [];
   const inputs = state.inputFields || [];
+
+  // Robust check: if target is mapped as a unique_id selector in the state, return it directly
+  const allSelectors = [...clickable.map(e => e.selector), ...inputs.map(e => e.selector)];
+  const exactMatch = allSelectors.find(sel => sel === `[unique_id="${target}"]` || sel === target);
+  if (exactMatch) {
+    return `[unique_id="${target}"]`;
+  }
 
   const idMatch = target.match(/^([ci])(\d+)$/i);
   if (idMatch) {
@@ -1707,7 +1750,8 @@ function looksLikeSelector(target: string): boolean {
     target.startsWith('text=') ||
     target.includes('[') ||
     target.includes('>') ||
-    target.includes(':')
+    target.includes(':') ||
+    /^[~!@#$%^&*()_\-+=[\]]/.test(target)
   );
 }
 

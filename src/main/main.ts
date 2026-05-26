@@ -88,6 +88,7 @@ function configureEmbeddedBrowserSecurity(): void {
   app.on('web-contents-created', (_event, contents) => {
     // Apply current theme color-scheme on every page load
     contents.on('did-finish-load', () => {
+      if (contents.isDestroyed()) return;
       const isDark = nativeTheme.themeSource === 'dark';
       const scheme = isDark ? 'dark' : 'light';
       contents.insertCSS(`:root { color-scheme: ${scheme} !important; }`).catch((err) => {
@@ -96,6 +97,7 @@ function configureEmbeddedBrowserSecurity(): void {
     });
 
     contents.on('will-attach-webview', (event, webPreferences, params) => {
+      if (contents.isDestroyed()) return;
       // Avoid deleting preload if possible, or set to undefined
       /*
       if ((webPreferences as any).preload) {
@@ -355,6 +357,7 @@ function resolveRendererHtmlPath(): string {
 function setupContextMenu(): void {
   app.on('web-contents-created', (_event, contents) => {
     contents.on('context-menu', (_e, props) => {
+      if (contents.isDestroyed()) return;
       const { x, y } = props;
       const menuTemplate: any[] = [];
 
@@ -458,6 +461,7 @@ function createWindow(partition?: string): BrowserWindow {
 
   if (isDev) {
     win.loadURL('http://localhost:5173');
+    win.webContents.openDevTools();
   } else {
     const rendererHtmlPath = resolveRendererHtmlPath();
     win.loadFile(rendererHtmlPath);

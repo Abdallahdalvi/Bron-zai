@@ -65,7 +65,12 @@ export class SkillsRegistry {
     for (const skill of this.skills.values()) {
       if (skill.name.toLowerCase() === normalized) return skill;
       if (skill.description.toLowerCase().includes(normalized)) return skill;
-      if (skill.triggers.some((trigger) => normalized.includes(trigger.toLowerCase()))) {
+      if (
+        skill.triggers.some((trigger) => {
+          const cleanTrigger = trigger.replace(/\[[^\]]+\]/g, '').trim().toLowerCase();
+          return cleanTrigger && (normalized.includes(cleanTrigger) || cleanTrigger.includes(normalized));
+        })
+      ) {
         return skill;
       }
     }

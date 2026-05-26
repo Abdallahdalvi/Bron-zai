@@ -3,6 +3,32 @@ import type { AgentAutomationController } from './agentAutomation';
 import type { BrowserState, TabGroupInfo, TabInfo } from '../shared/types';
 import type { BrowserHostCoordinator } from './browserHost';
 import { getAutofillContextForUrl, getSettings, saveSavedCredential } from './memory';
+import { DOM_UTILS_SCRIPT } from './domUtils';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import * as http from 'http';
+
+function getBrowserWebSocketUrl(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http.get('http://127.0.0.1:9222/json/version', (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.webSocketDebuggerUrl) {
+            resolve(parsed.webSocketDebuggerUrl);
+          } else {
+            reject(new Error('webSocketDebuggerUrl not found in json/version response'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }).on('error', (err) => {
+      reject(err);
+    });
+  });
+}
 
 type ConsoleLogEntry = { level: string; text: string; timestamp: number };
 
@@ -28,6 +54,9 @@ export class WebContentsViewController implements AgentAutomationController {
   private tabCounter = 0;
   private groupCounter = 0;
   private lastCredentialSaveKey = '';
+  private lastElementCoordinates = new Map<string, { x: number; y: number }>();
+  private playwrightBrowser: Browser | null = null;
+  private playwrightContext: BrowserContext | null = null;
 
   constructor(
     private readonly getWindow: () => BrowserWindow | null,
@@ -37,6 +66,46 @@ export class WebContentsViewController implements AgentAutomationController {
     this.browserHost.onViewportChanged((windowId) => {
       void this.applyActiveViewBounds(windowId);
     });
+  }
+
+  private async getPlaywrightPage(tab: ManagedTab): Promise<Page> {
+    if (this.playwrightBrowser && !this.playwrightBrowser.isConnected()) {
+      this.playwrightBrowser = null;
+      this.playwrightContext = null;
+    }
+
+    if (!this.playwrightBrowser) {
+      let wsUrl: string;
+      try {
+        wsUrl = await getBrowserWebSocketUrl();
+      } catch (err) {
+        console.warn('[Playwright Controller] Failed to fetch browser websocket URL, falling back to default HTTP endpoint:', err);
+        wsUrl = 'http://127.0.0.1:9222';
+      }
+      this.playwrightBrowser = await chromium.connectOverCDP(wsUrl, { timeout: 10000 });
+      const contexts = this.playwrightBrowser.contexts();
+      this.playwrightContext = contexts[0] || null;
+    }
+
+    if (!this.playwrightContext) {
+      throw new Error('Playwright context not initialized');
+    }
+
+    const token = 'bron_tab_' + Math.random().toString(36).slice(2);
+    await tab.view.webContents.executeJavaScript(`window.__bron_playwright_token = "${token}"`);
+
+    const pages = this.playwrightContext.pages();
+    for (const page of pages) {
+      try {
+        const pageToken = await page.evaluate(() => (window as any).__bron_playwright_token);
+        if (pageToken === token) {
+          await page.evaluate(() => { delete (window as any).__bron_playwright_token; });
+          return page;
+        }
+      } catch {}
+    }
+    
+    throw new Error('Could not match active tab to Playwright page');
   }
 
   getActiveTabId(): string | null {
@@ -54,7 +123,7 @@ export class WebContentsViewController implements AgentAutomationController {
   async getBrowserState(): Promise<BrowserState> {
     await this.ensureBootTab();
     const active = this.getActiveTab();
-    if (!active) {
+    if (!active || active.view.webContents.isDestroyed()) {
       return {
         url: '',
         title: '',
@@ -67,129 +136,87 @@ export class WebContentsViewController implements AgentAutomationController {
     }
 
     const page = await active.view.webContents.executeJavaScript(
-      `(function(){
+      `(async function(){
         try {
-          const isVisible = (el) => {
-            if (!(el instanceof HTMLElement)) return false;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 4 || rect.height < 4) return false;
-            const style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-            let parent = el.parentElement;
-            while (parent) {
-              const pStyle = window.getComputedStyle(parent);
-              if (pStyle.display === 'none' || pStyle.visibility === 'hidden') return false;
-              parent = parent.parentElement;
-            }
-            return true;
-          };
-          const toSelector = (el) => {
-            const tag = (el.tagName || 'div').toLowerCase();
-            const id = el.getAttribute?.('id');
-            if (id) return '#' + id;
-            const testId = el.getAttribute?.('data-testid') || el.getAttribute?.('data-test-id');
-            if (testId) return tag + '[data-testid="' + String(testId).replace(/"/g, '\\\\\\"') + '"]';
-            const aria = el.getAttribute?.('aria-label');
-            if (aria) return tag + '[aria-label="' + String(aria).replace(/"/g, '\\\\\\"') + '"]';
-            const name = el.getAttribute?.('name');
-            if (name) return tag + '[name="' + String(name).replace(/"/g, '\\\\\\"') + '"]';
-            return tag;
-          };
+          if (!window.__BRON_VISUAL_MAPPER) return { error: 'Visual mapper not installed' };
+          const { buildTreeFromBody, DomUtils } = window.__BRON_VISUAL_MAPPER;
 
-          const getPrunedDomTree = () => {
-            const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
-            const isInteractive = (el) => {
-              return el.matches?.(clickableSelector) || ['input', 'textarea', 'select'].includes(el.tagName.toLowerCase());
-            };
-
-            let clickableIdx = 0;
-            let inputIdx = 0;
-
-            const traverse = (node, depth = 0) => {
-              if (!isVisible(node)) return '';
-              const tagName = node.tagName.toLowerCase();
-              if (tagName === 'script' || tagName === 'style' || tagName === 'svg') return '';
-
-              let badge = '';
-              let label = '';
-              if (isInteractive(node)) {
-                if (['input', 'textarea', 'select'].includes(tagName)) {
-                  inputIdx++;
-                  badge = '[I' + inputIdx + ']';
-                  label = node.getAttribute('aria-label') || node.getAttribute('name') || node.getAttribute('placeholder') || '';
-                } else {
-                  clickableIdx++;
-                  badge = '[C' + clickableIdx + ']';
-                  label = node.textContent?.trim() || node.getAttribute('aria-label') || node.getAttribute('title') || '';
-                  label = label.replace(/\\s+/g, ' ').slice(0, 50);
-                }
-              }
-
-              const children = Array.from(node.children);
-              const childStrings = children
-                .map(child => traverse(child, depth + 1))
-                .filter(Boolean);
-
-              if (!badge && childStrings.length === 0) {
-                const text = Array.from(node.childNodes)
-                  .filter(n => n.nodeType === 3)
-                  .map(n => n.textContent?.trim())
-                  .filter(Boolean)
-                  .join(' ');
-                if (text.length > 5 && text.length < 150) {
-                  return '  '.repeat(depth) + '- "' + text.replace(/"/g, '\\\\"') + '"';
-                }
-                return '';
-              }
-
-              const indent = '  '.repeat(depth);
-              const elementStr = badge
-                ? indent + '- ' + badge + ' ' + tagName.toUpperCase() + (label ? ': "' + label.replace(/"/g, '\\\\"') + '"' : '')
-                : indent + '- ' + tagName.toUpperCase();
-
-              return [elementStr, ...childStrings].join('\\n');
-            };
-
-            return traverse(document.body) || '';
-          };
+          // now run it
+          const [elements, elementTree] = await buildTreeFromBody();
 
           const clickables = [];
-          const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
-          document.querySelectorAll(clickableSelector).forEach((el) => {
-            if (!isVisible(el)) return;
-            const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
-            const sel = toSelector(el);
-            if (!text && sel === el.tagName.toLowerCase()) return;
-            clickables.push({
-              text: text.slice(0, 140),
-              tag: (el.tagName || '').toLowerCase(),
-              role: el.getAttribute('role') || undefined,
-              selector: sel,
-            });
-          });
-
           const inputFields = [];
-          document.querySelectorAll('input, textarea, select').forEach((el) => {
-            if (!isVisible(el)) return;
-            const label = el.getAttribute('aria-label') || el.getAttribute('name') || '';
-            const placeholder = el.getAttribute('placeholder') || '';
-            const type = el.getAttribute('type') || el.tagName.toLowerCase();
-            inputFields.push({
-              placeholder,
-              label,
-              type,
-              selector: toSelector(el),
-            });
-          });
+
+          let clickableIdx = 0;
+          let inputIdx = 0;
+
+          // Skyvern marks elements with unique_id, tagName, text, interactable, etc.
+          // and attributes
+          
+          for (const el of elements) {
+            if (!el.interactable) continue;
+
+            const DOMNode = document.querySelector('[unique_id="' + el.id + '"]');
+            if (!DOMNode) continue;
+
+            const rect = DomUtils.getVisibleClientRect(DOMNode, true);
+            if (!rect) continue;
+
+            const center_x = Math.round(rect.left + rect.width / 2);
+            const center_y = Math.round(rect.top + rect.height / 2);
+
+            // Set data properties on DOM Node for injectVisualBadges
+            DOMNode.dataset.bronX = center_x;
+            DOMNode.dataset.bronY = center_y;
+            DOMNode.dataset.bronWidth = rect.width;
+            DOMNode.dataset.bronHeight = rect.height;
+
+            const isInput = ['input', 'textarea', 'select'].includes(el.tagName);
+            if (isInput) {
+              inputIdx++;
+              const badge = 'I' + inputIdx;
+              DOMNode.dataset.bronBadge = badge;
+              inputFields.push({
+                placeholder: el.attributes.placeholder || '',
+                label: el.attributes['aria-label'] || el.attributes.name || el.text || '',
+                type: el.attributes.type || el.tagName,
+                selector: '[unique_id="' + el.id + '"]',
+                badge: badge,
+                x: center_x,
+                y: center_y,
+                width: rect.width,
+                height: rect.height,
+              });
+            } else {
+              clickableIdx++;
+              const badge = 'C' + clickableIdx;
+              DOMNode.dataset.bronBadge = badge;
+              clickables.push({
+                text: el.text || el.attributes['aria-label'] || el.attributes.title || '',
+                tag: el.tagName,
+                role: el.attributes.role,
+                selector: '[unique_id="' + el.id + '"]',
+                badge: badge,
+                x: center_x,
+                y: center_y,
+                width: rect.width,
+                height: rect.height,
+              });
+            }
+          }
+
+          // Cache on window for injectVisualBadges
+          window.__BRON_BADGES__ = { clickables, inputFields };
 
           return {
             url: location.href,
             title: document.title || '',
-            visibleText: (document.body?.innerText || '').replace(/[ \t]+/g, ' ').replace(/\\n+/g, '\\n').trim().slice(0, 8000),
+            visibleText: document.body?.innerText || '',
             clickableElements: clickables.slice(0, 100),
             inputFields: inputFields.slice(0, 40),
-            prunedDomTree: getPrunedDomTree(),
+            prunedDomTree: JSON.stringify(elementTree, null, 2).slice(0, 50000),
           };
+
         } catch (e) {
           return {
             url: location.href,
@@ -204,6 +231,19 @@ export class WebContentsViewController implements AgentAutomationController {
       true,
     );
 
+    // Save coords for faster and more reliable interactions
+    this.lastElementCoordinates.clear();
+    if (page?.clickableElements) {
+      for (const el of page.clickableElements) {
+        this.lastElementCoordinates.set(el.selector, { x: el.x, y: el.y });
+      }
+    }
+    if (page?.inputFields) {
+      for (const el of page.inputFields) {
+        this.lastElementCoordinates.set(el.selector, { x: el.x, y: el.y });
+      }
+    }
+
     const tabs = this.getTabSnapshot();
     return {
       ...page,
@@ -215,7 +255,7 @@ export class WebContentsViewController implements AgentAutomationController {
   async getScreenshot(): Promise<string> {
     await this.ensureBootTab();
     const active = this.getActiveTab();
-    if (!active) return '';
+    if (!active || active.view.webContents.isDestroyed()) return '';
     
     // Inject visual index badges before taking screenshot
     await this.injectVisualBadges();
@@ -223,12 +263,15 @@ export class WebContentsViewController implements AgentAutomationController {
     // Short sleep to ensure the page has drawn the badges
     await new Promise((resolve) => setTimeout(resolve, 40));
     
-    const image = await active.view.webContents.capturePage();
-    
-    // Clear visual index badges immediately after
-    await this.clearVisualBadges();
-    
-    return image?.toDataURL ? String(image.toDataURL()) : '';
+    try {
+      const image = await active.view.webContents.capturePage();
+      // Clear visual index badges immediately after
+      await this.clearVisualBadges();
+      return image?.toDataURL ? String(image.toDataURL()) : '';
+    } catch {
+      await this.clearVisualBadges();
+      return '';
+    }
   }
 
   private async injectVisualBadges(): Promise<void> {
@@ -240,25 +283,13 @@ export class WebContentsViewController implements AgentAutomationController {
           try {
             document.getElementById('bron-overlay-container')?.remove();
             
-            const isVisible = (el) => {
-              if (!(el instanceof HTMLElement)) return false;
-              const rect = el.getBoundingClientRect();
-              if (rect.width < 4 || rect.height < 4) return false;
-              const style = window.getComputedStyle(el);
-              if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-              let parent = el.parentElement;
-              while (parent) {
-                const pStyle = window.getComputedStyle(parent);
-                if (pStyle.display === 'none' || pStyle.visibility === 'hidden') return false;
-                parent = parent.parentElement;
-              }
-              return true;
-            };
+            const badgesData = window.__BRON_BADGES__;
+            if (!badgesData) return;
             
             const container = document.createElement('div');
             container.id = 'bron-overlay-container';
             Object.assign(container.style, {
-              position: 'absolute',
+              position: 'fixed',
               top: '0',
               left: '0',
               width: '100%',
@@ -267,20 +298,14 @@ export class WebContentsViewController implements AgentAutomationController {
               zIndex: '2147483645'
             });
             
-            const clickableSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
-            let clickIdx = 0;
-            document.querySelectorAll(clickableSelector).forEach((el) => {
-              if (!isVisible(el) || clickIdx >= 100) return;
-              clickIdx++;
-              const rect = el.getBoundingClientRect();
-              
+            const createBadge = (text, x, y, isInput) => {
               const badge = document.createElement('div');
-              badge.innerText = 'C' + clickIdx;
+              badge.innerText = text;
               Object.assign(badge.style, {
                 position: 'absolute',
-                top: (rect.top + window.scrollY) + 'px',
-                left: (rect.left + window.scrollX) + 'px',
-                background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                top: (y - 8) + 'px',
+                left: (x - 8) + 'px',
+                background: isInput ? 'linear-gradient(135deg, #db2777 0%, #be185d 100%)' : 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
                 color: 'white',
                 fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
                 fontSize: '9px',
@@ -295,38 +320,16 @@ export class WebContentsViewController implements AgentAutomationController {
                 lineHeight: '1',
                 whiteSpace: 'nowrap'
               });
-              container.appendChild(badge);
-            });
+              return badge;
+            };
+
+            for (const el of badgesData.clickables || []) {
+              container.appendChild(createBadge(el.badge, el.x, el.y, false));
+            }
             
-            let inputIdx = 0;
-            document.querySelectorAll('input, textarea, select').forEach((el) => {
-              if (!isVisible(el) || inputIdx >= 40) return;
-              inputIdx++;
-              const rect = el.getBoundingClientRect();
-              
-              const badge = document.createElement('div');
-              badge.innerText = 'I' + inputIdx;
-              Object.assign(badge.style, {
-                position: 'absolute',
-                top: (rect.top + window.scrollY) + 'px',
-                left: (rect.left + window.scrollX) + 'px',
-                background: 'linear-gradient(135deg, #db2777 0%, #be185d 100%)',
-                color: 'white',
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-                fontSize: '9px',
-                fontWeight: 'bold',
-                padding: '2px 4px',
-                borderRadius: '3px',
-                border: '1px solid rgba(255,255,255,0.7)',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-                zIndex: '2147483646',
-                pointerEvents: 'none',
-                userSelect: 'none',
-                lineHeight: '1',
-                whiteSpace: 'nowrap'
-              });
-              container.appendChild(badge);
-            });
+            for (const el of badgesData.inputFields || []) {
+              container.appendChild(createBadge(el.badge, el.x, el.y, true));
+            }
             
             document.body.appendChild(container);
           } catch (e) {
@@ -507,17 +510,37 @@ export class WebContentsViewController implements AgentAutomationController {
   }
 
   async click(selector: string): Promise<string> {
-    const active = await this.requireActiveTab();
-    const native = await this.nativeClickSelector(active, selector, 'left');
-    const fallback = await this.runClickFallback(active, selector, false);
-    if (fallback.includes('failed') || fallback.includes('error')) {
-      return native || fallback;
+    const coords = this.lastElementCoordinates.get(selector);
+    if (coords) {
+      return this.clickAt(coords.x, coords.y);
     }
-    return fallback;
+    const active = await this.requireActiveTab();
+
+    try {
+      const page = await this.getPlaywrightPage(active);
+      await page.click(selector, { timeout: 4000 });
+      return `Clicked (playwright): ${selector}`;
+    } catch (err) {
+      console.warn(`[Playwright Controller] Click failed, falling back: ${err instanceof Error ? err.message : err}`);
+      const native = await this.nativeClickSelector(active, selector, 'left');
+      if (native !== null) return native;
+      return await this.runClickFallback(active, selector, false);
+    }
   }
 
   async clickAt(x: number, y: number): Promise<string> {
     const active = await this.requireActiveTab();
+    if (active.view.webContents.isDestroyed()) return 'Action failed: tab was closed';
+    
+    const valid = await active.view.webContents.executeJavaScript(`
+      (function() {
+        const el = document.elementFromPoint(${x}, ${y});
+        return el && el !== document.body && el !== document.documentElement;
+      })()
+    `).catch(() => false);
+    
+    if (!valid) return 'Action failed: target node at coordinates is no longer interactable (stale state).';
+
     await this.sendNativeMouseEvent(active, { type: 'mouseMove', x, y, button: 'left', clickCount: 0 });
     await this.delay(25);
     await this.sendNativeMouseEvent(active, { type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
@@ -527,17 +550,30 @@ export class WebContentsViewController implements AgentAutomationController {
   }
 
   async rightClick(selector: string): Promise<string> {
-    const active = await this.requireActiveTab();
-    const native = await this.nativeClickSelector(active, selector, 'right');
-    const fallback = await this.runClickFallback(active, selector, true);
-    if (fallback.includes('failed') || fallback.includes('error')) {
-      return native || fallback;
+    const coords = this.lastElementCoordinates.get(selector);
+    if (coords) {
+      return this.rightClickAt(coords.x, coords.y);
     }
-    return fallback;
+    const active = await this.requireActiveTab();
+    // Try native first (coordinate-based via selector lookup), fall back to JS dispatch
+    const native = await this.nativeClickSelector(active, selector, 'right');
+    if (native !== null) return native;
+    return await this.runClickFallback(active, selector, true);
   }
 
   async rightClickAt(x: number, y: number): Promise<string> {
     const active = await this.requireActiveTab();
+    if (active.view.webContents.isDestroyed()) return 'Action failed: tab was closed';
+    
+    const valid = await active.view.webContents.executeJavaScript(`
+      (function() {
+        const el = document.elementFromPoint(${x}, ${y});
+        return el && el !== document.body && el !== document.documentElement;
+      })()
+    `).catch(() => false);
+    
+    if (!valid) return 'Action failed: target node at coordinates is no longer interactable (stale state).';
+
     await this.sendNativeMouseEvent(active, { type: 'mouseMove', x, y, button: 'right', clickCount: 0 });
     await this.delay(25);
     await this.sendNativeMouseEvent(active, { type: 'mouseDown', x, y, button: 'right', clickCount: 1 });
@@ -572,79 +608,107 @@ export class WebContentsViewController implements AgentAutomationController {
   }
 
   async typeText(selector: string, text: string): Promise<string> {
-    const active = await this.requireActiveTab();
-    const focused = await active.view.webContents.executeJavaScript(
-      `(function(){
-        try {
-          const sel = ${JSON.stringify(selector)};
-          const isVisible = (el) => {
-            if (!(el instanceof HTMLElement)) return false;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 4 || rect.height < 4) return false;
-            const style = window.getComputedStyle(el);
-            return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-          };
-          const interactiveSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick], input, textarea, [contenteditable="true"]';
-          const escapeRegExp = (input) => {
-            const special = '\\\\^$.*+?()[]{}|';
-            let out = '';
-            for (const ch of String(input || '')) out += special.includes(ch) ? ('\\\\\\\\' + ch) : ch;
-            return out;
-          };
-          const findByText = (needle) => {
-            const all = Array.from(document.querySelectorAll(interactiveSelector + ', div, span, li'));
-            const pattern = new RegExp(escapeRegExp(String(needle || '').toLowerCase().trim()));
-            for (const el of all) {
-              if (!isVisible(el)) continue;
-              const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
-              if (!text) continue;
-              if (pattern.test(text.toLowerCase())) return el.closest(interactiveSelector) || el;
-            }
-            return null;
-          };
-          let el = null;
-          try { el = document.querySelector(sel); } catch {}
-          if (!el && sel.startsWith('text=')) {
-            const raw = sel.slice(5).replace(/^['"]|['"]$/g, '').trim();
-            if (raw) el = findByText(raw);
-          }
-          if (!el) {
-            const hasTextMatch = sel.match(/:has-text\\((['"])(.*?)\\1\\)/i);
-            if (hasTextMatch?.[2]) el = findByText(hasTextMatch[2]);
-          }
-          if (!el) {
-            const containsMatch = sel.match(/:contains\\((['"])(.*?)\\1\\)/i);
-            if (containsMatch?.[2]) el = findByText(containsMatch[2]);
-          }
-          if (!el) return false;
-          if (typeof el.focus === 'function') {
-            el.focus();
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              el.select();
-            } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
-              const range = document.createRange();
-              range.selectNodeContents(el);
-              const sel = window.getSelection();
-              if (sel) {
-                sel.removeAllRanges();
-                sel.addRange(range);
-              }
-            }
-            return true;
-          }
-          return false;
-        } catch (e) {
-          return false;
-        }
-      })()`,
-      true,
-    );
-    if (!focused) {
-      return `Type failed: target element not found or not focusable: ${selector}`;
+    const coords = this.lastElementCoordinates.get(selector);
+    if (coords) {
+      await this.clickAt(coords.x, coords.y);
     }
-    active.view.webContents.focus();
-    await active.view.webContents.insertText(text);
-    return `Typed into ${selector}`;
+    const active = await this.requireActiveTab();
+
+    try {
+      const page = await this.getPlaywrightPage(active);
+      await page.fill(selector, text, { timeout: 4000 });
+      return `Typed into (playwright) ${selector}`;
+    } catch (err) {
+      console.warn(`[Playwright Controller] Fill failed, falling back: ${err instanceof Error ? err.message : err}`);
+      const focused = await active.view.webContents.executeJavaScript(
+        `(function(){
+          try {
+            const sel = ${JSON.stringify(selector)};
+            const isVisible = (el) => {
+              if (!(el instanceof HTMLElement)) return false;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 4 || rect.height < 4) return false;
+              const style = window.getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+            };
+            const interactiveSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick], input, textarea, [contenteditable="true"]';
+            const escapeRegExp = (input) => {
+              const special = '\\\\^$.*+?()[]{}|';
+              let out = '';
+              for (const ch of String(input || '')) out += special.includes(ch) ? ('\\\\\\\\' + ch) : ch;
+              return out;
+            };
+            const findByText = (needle) => {
+              const all = Array.from(document.querySelectorAll(interactiveSelector + ', div, span, li'));
+              const pattern = new RegExp(escapeRegExp(String(needle || '').toLowerCase().trim()));
+              for (const el of all) {
+                if (!isVisible(el)) continue;
+                const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
+                if (!text) continue;
+                if (pattern.test(text.toLowerCase())) return el.closest(interactiveSelector) || el;
+              }
+              return null;
+            };
+            let el = null;
+            try { el = document.querySelector(sel); } catch {}
+            if (!el && sel.startsWith('text=')) {
+              const raw = sel.slice(5).replace(/^['"]|['"]$/g, '').trim();
+              if (raw) el = findByText(raw);
+            }
+            if (!el) {
+              const hasTextMatch = sel.match(/:has-text\\((['"])(.*?)\\1\\)/i);
+              if (hasTextMatch?.[2]) el = findByText(hasTextMatch[2]);
+            }
+            if (!el) {
+              const containsMatch = sel.match(/:contains\\((['"])(.*?)\\1\\)/i);
+              if (containsMatch?.[2]) el = findByText(containsMatch[2]);
+            }
+            if (!el) return false;
+            if (typeof el.focus === 'function') {
+              el.focus();
+              if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+                el.select();
+              } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                if (sel) {
+                  sel.removeAllRanges();
+                  sel.addRange(range);
+                }
+              }
+              return true;
+            }
+            return false;
+          } catch (e) {
+            return false;
+          }
+        })()`,
+        true,
+      );
+      if (!focused) {
+        return `Type failed: target element not found or not focusable: ${selector}`;
+      }
+      active.view.webContents.focus();
+      await active.view.webContents.insertText(text);
+      
+      await active.view.webContents.executeJavaScript(
+        `(function(){
+          try {
+            const el = document.activeElement;
+            if (el) {
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+              el.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true }));
+              el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            }
+          } catch (e) {}
+        })()`,
+        true,
+      ).catch(() => {});
+      return `Typed into ${selector}`;
+    }
   }
 
   async uploadFiles(
@@ -714,13 +778,17 @@ export class WebContentsViewController implements AgentAutomationController {
         if (!el) return 'Focus failed: element not found';
         if (el instanceof HTMLElement) el.focus();
         el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-        return 'Focused ${selector}';
+        return 'Focused ' + ${JSON.stringify(selector)};
       })();`,
       true,
     );
   }
 
   async hover(selector: string): Promise<string> {
+    const coords = this.lastElementCoordinates.get(selector);
+    if (coords) {
+      return this.hoverAt(coords.x, coords.y);
+    }
     const active = await this.requireActiveTab();
     const point = await this.computePointForSelector(active, selector);
     if (point) {
@@ -732,6 +800,17 @@ export class WebContentsViewController implements AgentAutomationController {
 
   async hoverAt(x: number, y: number): Promise<string> {
     const active = await this.requireActiveTab();
+    if (active.view.webContents.isDestroyed()) return 'Action failed: tab was closed';
+    
+    const valid = await active.view.webContents.executeJavaScript(`
+      (function() {
+        const el = document.elementFromPoint(${x}, ${y});
+        return el && el !== document.body && el !== document.documentElement;
+      })()
+    `).catch(() => false);
+    
+    if (!valid) return 'Action failed: target node at coordinates is no longer interactable (stale state).';
+
     await this.sendNativeMouseEvent(active, { type: 'mouseMove', x, y, button: 'left', clickCount: 0 });
     return `Hovered at ${x}, ${y}`;
   }
@@ -753,35 +832,59 @@ export class WebContentsViewController implements AgentAutomationController {
 
   async drag(sourceSelector: string, targetSelector: string): Promise<string> {
     const active = await this.requireActiveTab();
-    return await active.view.webContents.executeJavaScript(
-      `(function(){
-        const src = document.querySelector(${JSON.stringify(sourceSelector)});
-        const dst = document.querySelector(${JSON.stringify(targetSelector)});
-        if (!src || !dst) return 'Drag failed: missing source or target';
-        const srcRect = src.getBoundingClientRect();
-        const dstRect = dst.getBoundingClientRect();
-        src.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: srcRect.left + srcRect.width / 2, clientY: srcRect.top + srcRect.height / 2 }));
-        dst.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: dstRect.left + dstRect.width / 2, clientY: dstRect.top + dstRect.height / 2 }));
-        dst.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: dstRect.left + dstRect.width / 2, clientY: dstRect.top + dstRect.height / 2 }));
-        return 'Dragged ${sourceSelector} to ${targetSelector}';
-      })();`,
-      true,
-    );
+    try {
+      const page = await this.getPlaywrightPage(active);
+      await page.dragAndDrop(sourceSelector, targetSelector, { timeout: 4000 });
+      return `Dragged (playwright) ${sourceSelector} to ${targetSelector}`;
+    } catch (err) {
+      console.warn(`[Playwright Controller] Drag failed, falling back: ${err instanceof Error ? err.message : err}`);
+      return await active.view.webContents.executeJavaScript(
+        `(function(){
+          const src = document.querySelector(${JSON.stringify(sourceSelector)});
+          const dst = document.querySelector(${JSON.stringify(targetSelector)});
+          if (!src || !dst) return 'Drag failed: missing source or target';
+          const srcRect = src.getBoundingClientRect();
+          const dstRect = dst.getBoundingClientRect();
+          src.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: srcRect.left + srcRect.width / 2, clientY: srcRect.top + srcRect.height / 2 }));
+          dst.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: dstRect.left + dstRect.width / 2, clientY: dstRect.top + dstRect.height / 2 }));
+          dst.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: dstRect.left + dstRect.width / 2, clientY: dstRect.top + dstRect.height / 2 }));
+          return 'Dragged ${sourceSelector} to ${targetSelector}';
+        })();`,
+        true,
+      );
+    }
   }
 
   async dragAt(sourceSelector: string, x: number, y: number): Promise<string> {
     const active = await this.requireActiveTab();
-    return await active.view.webContents.executeJavaScript(
-      `(function(){
-        const src = document.querySelector(${JSON.stringify(sourceSelector)});
-        if (!src) return 'DragAt failed: missing source selector';
-        src.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-        src.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} }));
-        src.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} }));
-        return 'Dragged ${sourceSelector} to ${x}, ${y}';
-      })();`,
-      true,
-    );
+    try {
+      const page = await this.getPlaywrightPage(active);
+      const el = page.locator(sourceSelector);
+      const box = await el.boundingBox();
+      if (!box) throw new Error('Source selector has no bounding box');
+      
+      const startX = box.x + box.width / 2;
+      const startY = box.y + box.height / 2;
+      
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(x, y, { steps: 5 });
+      await page.mouse.up();
+      return `Dragged (playwright) ${sourceSelector} to ${x}, ${y}`;
+    } catch (err) {
+      console.warn(`[Playwright Controller] dragAt failed, falling back: ${err instanceof Error ? err.message : err}`);
+      return await active.view.webContents.executeJavaScript(
+        `(function(){
+          const src = document.querySelector(${JSON.stringify(sourceSelector)});
+          if (!src) return 'DragAt failed: missing source selector';
+          src.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          src.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} }));
+          src.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y} }));
+          return 'Dragged ${sourceSelector} to ${x}, ${y}';
+        })();`,
+        true,
+      );
+    }
   }
 
   async newTab(url?: string): Promise<string> {
@@ -917,6 +1020,9 @@ export class WebContentsViewController implements AgentAutomationController {
     await this.ensureBootTab();
     const active = this.getActiveTab();
     if (!active) throw new Error('No active tab available');
+    if (active.view.webContents.isDestroyed()) {
+      throw new Error('Active tab webContents is destroyed');
+    }
     return active;
   }
 
@@ -940,6 +1046,29 @@ export class WebContentsViewController implements AgentAutomationController {
       },
     });
     view.webContents.setUserAgent(USER_AGENT);
+    // Grant clipboard and notification permissions so the page can copy/paste
+    // and fire desktop alerts without the agent hitting security denials.
+    const ses = view.webContents.session;
+    ses.setPermissionRequestHandler((_wc, permission, callback) => {
+      const allowed = new Set([
+        'clipboard-read',
+        'clipboard-write',
+        'clipboard-sanitized-write',
+        'notifications',
+        'media',
+        'pointerLock',
+      ]);
+      callback(allowed.has(permission));
+    });
+    ses.setPermissionCheckHandler((_wc, permission) => {
+      const allowed = new Set([
+        'clipboard-read',
+        'clipboard-write',
+        'clipboard-sanitized-write',
+        'notifications',
+      ]);
+      return allowed.has(permission);
+    });
     const id = `tab_${++this.tabCounter}_${Date.now()}`;
     const tab: ManagedTab = {
       id,
@@ -996,12 +1125,15 @@ export class WebContentsViewController implements AgentAutomationController {
     }
     tab.url = target;
     tab.title = this.buildTabTitle(target);
+    // Clear stale element coordinates from the previous page to prevent phantom clicks
+    this.lastElementCoordinates.clear();
     this.emitTabUpdate();
     await tab.view.webContents.loadURL(target);
   }
 
   private async installPageEnhancements(tab: ManagedTab): Promise<void> {
     const wc = tab.view.webContents;
+    if (wc.isDestroyed()) return;
     try {
       await wc.executeJavaScript(
         `(function() {
@@ -1010,6 +1142,19 @@ export class WebContentsViewController implements AgentAutomationController {
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
           } catch {}
+          if (!window.__BRON_VISUAL_MAPPER) {
+            try {
+              (function() {
+                ${DOM_UTILS_SCRIPT}
+                window.__BRON_VISUAL_MAPPER = {
+                  buildTreeFromBody: typeof buildTreeFromBody !== 'undefined' ? buildTreeFromBody : null,
+                  DomUtils: typeof DomUtils !== 'undefined' ? DomUtils : null
+                };
+              })();
+            } catch (e) {
+              console.error('Failed to inject visual mapper:', e);
+            }
+          }
         })();`,
         true,
       );
@@ -1292,6 +1437,9 @@ export class WebContentsViewController implements AgentAutomationController {
           (win.contentView as any).removeChildView(tab.view);
         }
       } catch {}
+      try {
+        tab.view.setBounds({ x: -9999, y: -9999, width: 0, height: 0 });
+      } catch {}
     }
     if (!active) return;
     try {
@@ -1408,75 +1556,95 @@ export class WebContentsViewController implements AgentAutomationController {
 
   private async runClickFallback(tab: ManagedTab, selector: string, right: boolean): Promise<string> {
     const eventName = right ? 'contextmenu' : 'click';
-    const result = await tab.view.webContents.executeJavaScript(
-      `(function(){
-        try {
-          const sel = ${JSON.stringify(selector)};
-          const isVisible = (el) => {
-            if (!(el instanceof HTMLElement)) return false;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 4 || rect.height < 4) return false;
-            const style = window.getComputedStyle(el);
-            return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-          };
-          const interactiveSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
-          const escapeRegExp = (input) => {
-            const special = '\\\\^$.*+?()[]{}|';
-            let out = '';
-            for (const ch of String(input || '')) out += special.includes(ch) ? ('\\\\\\\\' + ch) : ch;
-            return out;
-          };
-          const findByText = (needle) => {
-            const all = Array.from(document.querySelectorAll(interactiveSelector + ', div, span, li'));
-            const pattern = new RegExp(escapeRegExp(String(needle || '').toLowerCase().trim()));
-            for (const el of all) {
-              if (!isVisible(el)) continue;
-              const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
-              if (!text) continue;
-              if (pattern.test(text.toLowerCase())) return el.closest(interactiveSelector) || el;
+    try {
+      const result = await tab.view.webContents.executeJavaScript(
+        `(function(){
+          try {
+            const sel = ${JSON.stringify(selector)};
+            const isVisible = (el) => {
+              if (!(el instanceof HTMLElement)) return false;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 4 || rect.height < 4) return false;
+              const style = window.getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+            };
+            const interactiveSelector = 'a[href], button, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="submit"], input[type="button"], [tabindex]:not([tabindex="-1"]), [aria-label], [data-testid], [data-test-id], [jsaction], [onclick]';
+            const escapeRegExp = (input) => {
+              const special = '\\\\^$.*+?()[]{}|';
+              let out = '';
+              for (const ch of String(input || '')) out += special.includes(ch) ? ('\\\\\\\\' + ch) : ch;
+              return out;
+            };
+            const findByText = (needle) => {
+              const all = Array.from(document.querySelectorAll(interactiveSelector + ', div, span, li'));
+              const pattern = new RegExp(escapeRegExp(String(needle || '').toLowerCase().trim()));
+              for (const el of all) {
+                if (!isVisible(el)) continue;
+                const text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
+                if (!text) continue;
+                if (pattern.test(text.toLowerCase())) return el.closest(interactiveSelector) || el;
+              }
+              return null;
+            };
+            let el = null;
+            try { el = document.querySelector(sel); } catch {}
+            if (!el && sel.startsWith('text=')) {
+              const raw = sel.slice(5).replace(/^['"]|['"]$/g, '').trim();
+              if (raw) el = findByText(raw);
             }
-            return null;
-          };
-          let el = null;
-          try { el = document.querySelector(sel); } catch {}
-          if (!el && sel.startsWith('text=')) {
-            const raw = sel.slice(5).replace(/^['"]|['"]$/g, '').trim();
-            if (raw) el = findByText(raw);
+            if (!el) {
+              const hasTextMatch = sel.match(/:has-text\\((['"])(.*?)\\1\\)/i);
+              if (hasTextMatch?.[2]) el = findByText(hasTextMatch[2]);
+            }
+            if (!el) {
+              const containsMatch = sel.match(/:contains\\((['"])(.*?)\\1\\)/i);
+              if (containsMatch?.[2]) el = findByText(containsMatch[2]);
+            }
+            if (!el) return '${right ? 'Right click' : 'Click'} failed on "' + sel + '": element not found';
+            if (el instanceof HTMLElement) {
+              el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+            }
+            const rect = el.getBoundingClientRect();
+            const x = Math.round(rect.left + rect.width / 2);
+            const y = Math.round(rect.top + rect.height / 2);
+            
+            const opts = {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              button: ${right ? 2 : 0},
+              buttons: ${right ? 2 : 1},
+              clientX: x,
+              clientY: y,
+            };
+            
+            el.dispatchEvent(new MouseEvent('mousedown', opts));
+            el.dispatchEvent(new MouseEvent('mouseup', opts));
+            el.dispatchEvent(new MouseEvent('${eventName}', opts));
+            
+            if (!${right} && typeof el.click === 'function') {
+              el.click();
+            }
+            return '${right ? 'Right-clicked' : 'Clicked'}: ' + sel;
+          } catch (e) {
+            return '${right ? 'Right click' : 'Click'} error: ' + (e?.message || String(e));
           }
-          if (!el) {
-            const hasTextMatch = sel.match(/:has-text\\((['"])(.*?)\\1\\)/i);
-            if (hasTextMatch?.[2]) el = findByText(hasTextMatch[2]);
-          }
-          if (!el) {
-            const containsMatch = sel.match(/:contains\\((['"])(.*?)\\1\\)/i);
-            if (containsMatch?.[2]) el = findByText(containsMatch[2]);
-          }
-          if (!el) return '${right ? 'Right click' : 'Click'} failed on "' + sel + '": element not found';
-          if (el instanceof HTMLElement) {
-            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-          }
-          const rect = el.getBoundingClientRect();
-          const x = Math.round(rect.left + rect.width / 2);
-          const y = Math.round(rect.top + rect.height / 2);
-          el.dispatchEvent(new MouseEvent('${eventName}', {
-            bubbles: true,
-            cancelable: true,
-            button: ${right ? 2 : 0},
-            buttons: ${right ? 2 : 1},
-            clientX: x,
-            clientY: y,
-          }));
-          if (!${right} && typeof el.click === 'function') {
-            el.click();
-          }
-          return '${right ? 'Right-clicked' : 'Clicked'}: ' + sel;
-        } catch (e) {
-          return '${right ? 'Right click' : 'Click'} error: ' + (e?.message || String(e));
-        }
-      })();`,
-      true,
-    );
-    return String(result || '');
+        })();`,
+        true,
+      );
+      return String(result || '');
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (
+        msg.includes('Script failed to execute') ||
+        msg.includes('context was destroyed') ||
+        msg.includes('destroyed') ||
+        (tab.view?.webContents && tab.view.webContents.isDestroyed())
+      ) {
+        return `${right ? 'Right-clicked' : 'Clicked'} (navigation triggered): ${selector}`;
+      }
+      throw err;
+    }
   }
 
   private async setCheckedState(selector: string, targetState: boolean): Promise<string> {
@@ -1507,5 +1675,11 @@ export class WebContentsViewController implements AgentAutomationController {
     }
     this.tabs.clear();
     this.consoleLogsByTab.clear();
+
+    if (this.playwrightBrowser) {
+      this.playwrightBrowser.close().catch(() => {});
+      this.playwrightBrowser = null;
+      this.playwrightContext = null;
+    }
   }
 }

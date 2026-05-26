@@ -19,22 +19,46 @@ class Controller:
 
 controller = Controller()
 
+import os
+from websockets.sync.client import connect
+
+ws_conn = None
+call_id_counter = 0
+
+def get_ws_conn():
+    global ws_conn
+    if ws_conn is None:
+        port = os.environ.get("BRON_WS_PORT")
+        token = os.environ.get("BRON_WS_TOKEN")
+        if not port or not token:
+            raise Exception("WebSocket port or token not provided in environment variables")
+        ws_conn = connect(f"ws://localhost:{port}/?token={token}")
+    return ws_conn
+
 def call_browser(action, target="", value=""):
     """
-    Send browser actions to Electron's active browser controller (bc) over stdin/stdout.
+    Send browser actions to Electron's active browser controller (bc) over WebSocket.
     """
-    req = {
-        "action": action,
-        "target": target,
-        "value": value
-    }
-    # Output JSON-RPC request to stdout
-    print(f"__BRON_BROWSER_REQ__:{json.dumps(req)}", flush=True)
+    global call_id_counter
+    call_id_counter += 1
+    call_id = str(call_id_counter)
     
-    # Read browser execution result from Electron over stdin
-    line = sys.stdin.readline().strip()
+    ws = get_ws_conn()
+    req = {
+        "type": "BRON_BROWSER_REQ",
+        "id": call_id,
+        "data": {
+            "action": action,
+            "target": target,
+            "value": value
+        }
+    }
+    ws.send(json.dumps(req))
+    
+    # Read browser execution result
+    res_str = ws.recv()
     try:
-        res = json.loads(line)
+        res = json.loads(res_str)
         return res.get("result")
     except Exception as e:
         return f"Error parsing browser response: {str(e)}"
@@ -87,12 +111,33 @@ if __name__ == "__main__":
             func = func_entry["func"]
             try:
                 res = func(raw_args)
-                # Return successful JSON-RPC payload back to Electron
-                print(f"__BRON_PYTHON_RES__:{json.dumps({'status': 'success', 'result': res})}", flush=True)
+                # Return successful JSON-RPC payload back to Electron over WebSocket
+                try:
+                    ws = get_ws_conn()
+                    ws.send(json.dumps({
+                        "type": "BRON_PYTHON_RES",
+                        "data": {'status': 'success', 'result': res}
+                    }))
+                except Exception as wse:
+                    print(f"Failed to send success result via WS: {wse}")
             except Exception as e:
-                print(f"__BRON_PYTHON_RES__:{json.dumps({'status': 'error', 'message': str(e)})}", flush=True)
+                try:
+                    ws = get_ws_conn()
+                    ws.send(json.dumps({
+                        "type": "BRON_PYTHON_RES",
+                        "data": {'status': 'error', 'message': str(e)}
+                    }))
+                except Exception as wse:
+                    print(f"Failed to send error result via WS: {wse}")
         else:
-            print(f"__BRON_PYTHON_RES__:{json.dumps({'status': 'error', 'message': f'Action {action_name} not found'})}", flush=True)
+            try:
+                ws = get_ws_conn()
+                ws.send(json.dumps({
+                    "type": "BRON_PYTHON_RES",
+                    "data": {'status': 'error', 'message': f'Action {action_name} not found'}
+                }))
+            except Exception as wse:
+                print(f"Failed to send not-found result via WS: {wse}")
     else:
         print("[Python Tool] Usage: python index.py <action_name> <json_args>", file=sys.stderr)
         sys.exit(1)

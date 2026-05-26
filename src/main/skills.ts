@@ -2,6 +2,8 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { WebSocketServer } from 'ws';
+import * as crypto from 'crypto';
 import { SkillsRegistry, type SkillDefinition } from '../skills/registry';
 
 let registry: SkillsRegistry | null = null;
@@ -49,6 +51,7 @@ export async function findSkill(query: string): Promise<SkillDefinition | null> 
   return getRegistry().findSkill(query);
 }
 
+
 async function runPythonSkill(
   scriptPath: string,
   name: string,
@@ -59,23 +62,76 @@ async function runPythonSkill(
     const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
     const jsonArgs = JSON.stringify(args);
     
-    const pyProcess = spawn(pythonCmd, [scriptPath, name, jsonArgs]);
+    // Create WebSocket Server for structured IPC
+    const wss = new WebSocketServer({ port: 0 });
+    const token = crypto.randomBytes(16).toString('hex');
+    let resultData: string | null = null;
     
-    let resultData = '';
-    let errorData = '';
-    let buffer = '';
+    wss.on('listening', () => {
+      const address = wss.address() as any;
+      const port = address.port;
+      
+      const pyProcess = spawn(pythonCmd, [scriptPath, name, jsonArgs], {
+        env: { ...process.env, BRON_WS_PORT: String(port), BRON_WS_TOKEN: token }
+      });
+      
+      let errorData = '';
+      pyProcess.stderr.on('data', (chunk) => {
+        errorData += chunk.toString();
+      });
+      
+      pyProcess.stdout.on('data', (chunk) => {
+        console.log(`[Python Skill: ${name}] ${chunk.toString().trim()}`);
+      });
+      
+      pyProcess.on('close', (code) => {
+        // Use setImmediate to allow any pending WS message events to process
+        // before we resolve/reject. This prevents the race between the process
+        // exiting and the final BRON_PYTHON_RES WebSocket frame arriving.
+        setImmediate(() => {
+          wss.close();
+          if (code !== 0) {
+            reject(new Error(errorData || `Python process exited with code ${code}`));
+            return;
+          }
+          
+          if (!resultData) {
+            resolve(`Python skill "${name}" executed successfully with no output.`);
+            return;
+          }
 
-    pyProcess.stdout.on('data', async (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('__BRON_BROWSER_REQ__:')) {
           try {
-            const rawReq = trimmed.slice('__BRON_BROWSER_REQ__:'.length);
-            const req = JSON.parse(rawReq);
+            const parsed = JSON.parse(resultData);
+            if (parsed.status === 'success') {
+              resolve(parsed.result);
+            } else {
+              reject(new Error(parsed.message || 'Unknown Python skill execution error'));
+            }
+          } catch (e) {
+            resolve(resultData);
+          }
+        });
+      });
+    });
+
+    wss.on('connection', (ws, req) => {
+      const url = req.url || '';
+      if (!url.includes(`token=${token}`)) {
+        ws.close(4001, 'Unauthorized');
+        return;
+      }
+      
+      ws.on('message', async (message: any) => {
+        try {
+          const payload = JSON.parse(message.toString());
+          
+          if (payload.type === 'BRON_PYTHON_RES') {
+            resultData = JSON.stringify(payload.data);
+            return;
+          }
+          
+          if (payload.type === 'BRON_BROWSER_REQ') {
+            const req = payload.data;
             let callRes = null;
             const action = req.action;
             const target = req.target;
@@ -101,43 +157,17 @@ async function runPythonSkill(
               callRes = `Error: Unsupported browser action "${action}"`;
             }
 
-            pyProcess.stdin.write(JSON.stringify({ result: callRes }) + '\n');
-          } catch (e: any) {
-            pyProcess.stdin.write(JSON.stringify({ result: `Error executing controller command: ${e.message}` }) + '\n');
+            ws.send(JSON.stringify({ id: payload.id, result: callRes }));
           }
-        } else if (trimmed.startsWith('__BRON_PYTHON_RES__:')) {
-          resultData = trimmed.slice('__BRON_PYTHON_RES__:'.length);
-        } else if (trimmed) {
-          console.log(`[Python Skill: ${name}] ${trimmed}`);
+        } catch (e: any) {
+          ws.send(JSON.stringify({ error: `Error executing controller command: ${e.message}` }));
         }
-      }
+      });
     });
-
-    pyProcess.stderr.on('data', (chunk) => {
-      errorData += chunk.toString();
-    });
-
-    pyProcess.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(errorData || `Python process exited with code ${code}`));
-        return;
-      }
-      
-      if (!resultData) {
-        resolve(`Python skill "${name}" executed successfully with no output.`);
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(resultData);
-        if (parsed.status === 'success') {
-          resolve(parsed.result);
-        } else {
-          reject(new Error(parsed.message || 'Unknown Python skill execution error'));
-        }
-      } catch (e) {
-        resolve(resultData);
-      }
+    
+    wss.on('error', (err) => {
+      reject(new Error(`WebSocket Server error: ${err.message}`));
+      wss.close();
     });
   });
 }

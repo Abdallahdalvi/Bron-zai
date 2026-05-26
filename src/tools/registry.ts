@@ -72,6 +72,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'save_pdf', category: 'page-actions', description: 'Save active page as pdf.' },
   { name: 'save_screenshot', category: 'page-actions', description: 'Save screenshot to disk.' },
   { name: 'download_file', category: 'page-actions', description: 'Trigger a file download.' },
+  { name: 'act', category: 'page-actions', description: 'Execute a natural language task on the active page.' },
+  { name: 'extract', category: 'page-actions', description: 'Extract structured information from the active page using a query prompt.' },
+  { name: 'validate', category: 'page-actions', description: 'Evaluate a yes/no assertion about the active page.' },
 
   { name: 'list_workflows', category: 'scheduling', description: 'List saved browser workflows and schedules.' },
   { name: 'save_workflow', category: 'scheduling', description: 'Create or update a workflow, optionally with a schedule.' },

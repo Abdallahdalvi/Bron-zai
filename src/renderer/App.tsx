@@ -198,7 +198,9 @@ export default function App() {
       color = '#1e1b4b';
       symbolColor = '#f5f3ff';
     }
-    window.bronAPI.invoke('theme:update-overlay', { theme, color, symbolColor });
+    if (window.bronAPI) {
+      window.bronAPI.invoke('theme:update-overlay', { theme, color, symbolColor });
+    }
   }, [theme]);
 
   useEffect(() => {
