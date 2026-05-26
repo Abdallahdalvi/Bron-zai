@@ -754,20 +754,34 @@ export class WebContentsViewController implements AgentAutomationController {
 
   async pressEnter(): Promise<string> {
     const active = await this.requireActiveTab();
-    active.view.webContents.focus();
-    active.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-    await this.delay(20);
-    active.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-    return 'Pressed Enter';
+    try {
+      const page = await this.getPlaywrightPage(active);
+      await page.keyboard.press('Enter');
+      return 'Pressed Enter (playwright)';
+    } catch (err) {
+      console.warn(`[Playwright Controller] pressEnter failed, falling back: ${err instanceof Error ? err.message : err}`);
+      active.view.webContents.focus();
+      active.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+      await this.delay(20);
+      active.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+      return 'Pressed Enter';
+    }
   }
 
   async pressKey(key: string): Promise<string> {
     const active = await this.requireActiveTab();
-    active.view.webContents.focus();
-    active.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: key });
-    await this.delay(20);
-    active.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: key });
-    return `Pressed key: ${key}`;
+    try {
+      const page = await this.getPlaywrightPage(active);
+      await page.keyboard.press(key);
+      return `Pressed key (playwright): ${key}`;
+    } catch (err) {
+      console.warn(`[Playwright Controller] pressKey failed, falling back: ${err instanceof Error ? err.message : err}`);
+      active.view.webContents.focus();
+      active.view.webContents.sendInputEvent({ type: 'keyDown', keyCode: key });
+      await this.delay(20);
+      active.view.webContents.sendInputEvent({ type: 'keyUp', keyCode: key });
+      return `Pressed key: ${key}`;
+    }
   }
 
   async focus(selector: string): Promise<string> {
