@@ -246,7 +246,12 @@ export class WebContentsViewController implements AgentAutomationController {
 
     const tabs = this.getTabSnapshot();
     return {
-      ...page,
+      url: page?.url || '',
+      title: page?.title || '',
+      visibleText: page?.visibleText || page?.error || '',
+      clickableElements: page?.clickableElements || [],
+      inputFields: page?.inputFields || [],
+      prunedDomTree: page?.prunedDomTree || '',
       tabs,
       tabGroups: this.snapshotTabGroups(tabs),
     };
